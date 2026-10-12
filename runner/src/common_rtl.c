@@ -1621,6 +1621,13 @@ void WriteReg(uint16 reg, uint8 value) {
     if (reg == 0x420D)
       g_memsel = (uint8_t)(value & 1);  /* FastROM select; paces $80-FF code */
     recomp_write_internal_reg(reg, value);
+  } else if (reg == 0x4016) {
+    /* JOYWR — manual joypad strobe. The read side ($4016/$4017 in
+     * ReadRegOpenBus) already goes through snes_readReg; without this the
+     * latch never reloaded, so after the first 16 serial reads every read
+     * returned 1 and a game polling manually (Super Star Wars) saw every
+     * button held with no input. */
+    snes_writeReg(g_snes, reg, value);
   } else if (reg >= 0x4300 && reg < 0x4380) {
     dma_write(g_dma, reg, value);
   } else if (reg >= 0x4800 && reg < 0x4808 &&
