@@ -29,4 +29,15 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
 /* Forget the booted machine: the next frame starts from the reset vector. */
 void snes_beam_frame_driver_reset(void);
 
+/* Save or load where the driver resumes the main CPU next frame and whether
+ * it is halted on WAI. Neither is in snes_saveload or in
+ * RtlSaveExecutionState (which carries g_cpu and the interp bridge), so
+ * without it a loaded state resumes the CPU at whatever PC was parked BEFORE
+ * the load, on top of the loaded RAM -- harmless only when both moments sat
+ * in the same wait loop. A title calls this next to RtlSaveExecutionState /
+ * RtlLoadExecutionState in its RtlGameInfo state_save_extra /
+ * state_load_extra hooks. */
+struct SaveLoadInfo;
+void snes_beam_frame_driver_saveload(struct SaveLoadInfo *sli);
+
 #endif /* SNESRECOMP_BEAM_FRAME_DRIVER_H */

@@ -20,6 +20,7 @@
 #include "snes/interp_bridge.h"
 #include "snes/ppu.h"
 #include "snes/sa1.h"
+#include "snes/saveload.h"
 #include "snes/snes.h"
 #include "snes/superfx.h"
 
@@ -114,7 +115,20 @@ static void run_interrupt(uint32_t vector, uint64_t deadline) {
   update_resume_pc();
 }
 
+/* RtlStateGeneration() at the last frame: it moves on a reset or a savestate
+ * load (a jump the player sees) and deliberately not on a rollback. */
+static uint64_t s_seen_generation;
+
 void snes_beam_frame_driver_run_frame(void) {
+  /* The raster journal's completed field is host history from the old
+   * timeline. Left in place after a savestate load, render begin restored
+   * its field-start registers over the loaded ones every other frame
+   * (Super Star Wars drew mode-0 garbage on alternate frames). */
+  const uint64_t generation = RtlStateGeneration();
+  if (generation != s_seen_generation) {
+    s_seen_generation = generation;
+    ppu_rasterReset();
+  }
   const bool booting = s_resume_pc == 0;
   int slices = 0;
   uint64_t frame_end;
@@ -268,4 +282,18 @@ void snes_beam_frame_driver_draw_ppu_frame_observed(
 void snes_beam_frame_driver_reset(void) {
   s_resume_pc = 0;
   s_wai_halted = false;
+}
+
+/* Chunk layout: u32 magic 'BFD1', u32 resume_pc, u8 wai_halted. */
+#define BFD_STATE_MAGIC 0x31444642u
+
+void snes_beam_frame_driver_saveload(struct SaveLoadInfo *sli) {
+  uint32_t magic = BFD_STATE_MAGIC;
+  uint8_t wai = s_wai_halted ? 1 : 0;
+  sli->func(sli, &magic, sizeof magic);
+  if (magic != BFD_STATE_MAGIC)
+    return;   /* not ours: leave the running state untouched */
+  sli->func(sli, &s_resume_pc, sizeof s_resume_pc);
+  sli->func(sli, &wai, sizeof wai);
+  s_wai_halted = wai != 0;
 }
