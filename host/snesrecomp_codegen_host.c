@@ -160,6 +160,10 @@ static void step_fail_message(char* err_msg, size_t err_cap, const char* what, i
     if (g_step_log_path[0] && used + 12 < err_cap)
         snprintf(err_msg + used, err_cap - used, "\nLog: %s", g_step_log_path);
     fprintf(stderr, "snesrecomp-codegen: %s failed (exit %d)\n", what, code);
+    if (g_step_log) {
+        fprintf(g_step_log, "%s failed (exit %d)\n", what, code);
+        fflush(g_step_log);
+    }
     if (g_step_hint[0]) fprintf(stderr, "snesrecomp-codegen: %s\n", g_step_hint);
     for (int i = 0; i < g_step_err_n; ++i) fprintf(stderr, "snesrecomp-codegen:   %s\n", g_step_errs[i]);
     if (g_step_log_path[0]) fprintf(stderr, "snesrecomp-codegen: full log: %s\n", g_step_log_path);
@@ -1083,6 +1087,12 @@ static int run_generate_posix(const char* rom,
     posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_addclose(&actions, pipefd[0]);
     posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
+    /* stderr into the same pipe, as the build step does: a generate that dies
+     * before its first JSON line (python missing a module, env.sh failing,
+     * a Python traceback) otherwise left snesrecomp_rebuild.log with only the
+     * "==== snesrecomp generate ====" header for a double-clicked launcher,
+     * whose stderr goes nowhere. Non-JSON lines are logged, not shown. */
+    posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDERR_FILENO);
     posix_spawn_file_actions_addclose(&actions, pipefd[1]);
 
     char* argv[32];
