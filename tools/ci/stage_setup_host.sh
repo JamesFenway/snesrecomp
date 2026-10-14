@@ -174,6 +174,24 @@ for need in snesrecomp/snesrecomp_cli.py recomp/bank00.cfg CMakeLists.txt VERSIO
   fi
 done
 
+# ── the native analyzer ─────────────────────────────────────────────────────
+# `generate` runs the Rust analyzer and, when the binary is absent, builds it
+# with cargo. A player has no Rust toolchain (cmake-clang-v1 carries none), so
+# a pack without the binary could never generate: "could not build the native
+# analyzer". It reads no ROM bytes until run, so ship the release build at the
+# path tools/v2_analyze.py checks first.
+ANALYZER_NAME="snesrecomp-analyze"
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) ANALYZER_NAME="snesrecomp-analyze.exe" ;; esac
+ANALYZER_REL="snesrecomp/recompiler-rs/target/release/${ANALYZER_NAME}"
+if [[ ! -f "${ROOT}/${ANALYZER_REL}" ]]; then
+  ( cd "${ROOT}/snesrecomp" && python3 tools/build_native_analyzer.py ) || {
+    echo "error: could not build the native analyzer (needs cargo); the pack could not generate" >&2
+    exit 1
+  }
+fi
+mkdir -p "$(dirname "${STAGE}/${ANALYZER_REL}")"
+cp -a "${ROOT}/${ANALYZER_REL}" "${STAGE}/${ANALYZER_REL}"
+
 # ── optional embedded toolchain ─────────────────────────────────────────────
 if [[ "${EMBED_TOOLCHAIN}" -eq 1 ]]; then
   TC="${TOOLCHAIN_DIR_ARG:-${RETCOMM_TOOLCHAIN_DIR:-${TOOLCHAIN_DIR:-}}}"
