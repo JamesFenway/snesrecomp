@@ -231,6 +231,17 @@ static uint8_t bridge_bus_read(void *mem, uint32_t adr) {
     int continuous=bridge_continuous_read(adr);
     if (continuous) s_interp_continuous_read_epoch++;
     if (bridge_is_apu_port(adr)) bridge_apu_flush(cpu);
+    /* RDNMI is sampled on the read cycle, not after the instruction. The beam
+     * normally moves once per opcode, after it ran, so an `LDA $4210 / BPL`
+     * vblank wait with NMI enabled never saw bit 7: the beam crossed V=225
+     * after the read, the NMI was taken at the next boundary, and the
+     * handler's own $4210 acknowledge cleared the latch first. Spider-Man
+     * ($81:FA25) hung on black after the title that way; on hardware the read
+     * wins whenever the edge lands before its read cycle. Walk the beam to
+     * this access first. The opcode's closing sync walks the rest. */
+    if (s_interp_bus_timing_active && g_snes && (uint16_t)adr == 0x4210 &&
+        ((adr >> 16) < 0x40 || ((adr >> 16) >= 0x80 && (adr >> 16) < 0xC0)))
+        snes_sync_master_clock(g_snes, cpu->master_cycles + s_interp_bus_master);
     uint8_t value=cpu_read8(cpu,(uint8)((adr>>16)&0xff),(uint16)adr);
     if (continuous) {
         BridgeDynamicValue *d=&s_bridge_dynamic_values[(adr^(adr>>8)^(adr>>16))&63];
