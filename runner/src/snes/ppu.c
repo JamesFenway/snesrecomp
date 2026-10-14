@@ -802,17 +802,22 @@ void ppu_runLine(Ppu* ppu, int line) {
     s_oam_snap_frame = snes_frame_counter;
     debug_server_on_oam_render();
   }
-  if(line == 0) {
-    if (PPU_mosaicSize(ppu) != ppu->lastMosaicModulo) {
-      int mod = PPU_mosaicSize(ppu);
-      ppu->lastMosaicModulo = mod;
-      for (int i = 0, j = 0; i < countof(ppu->mosaicModulo); i++) {
-        ppu->mosaicModulo[i] = i - j;
-        j = (j + 1 == mod ? 0 : j + 1);
-      }
+  /* Rebuild the mosaic block table on whichever line first sees a new size.
+   * This used to sit inside the line == 0 block like the OAM snapshot above,
+   * and frame-model hosts never pass line 0: the table stayed all zeros, so
+   * every mosaic draw computed a block width of size - x (negative past the
+   * first block) and the fill loops ran off the end of the line buffer.
+   * Super Star Wars' mosaic transition into the trench run corrupted the heap
+   * and crashed the game this way. Cheap when unchanged: one compare. */
+  if (PPU_mosaicSize(ppu) != ppu->lastMosaicModulo) {
+    int mod = PPU_mosaicSize(ppu);
+    ppu->lastMosaicModulo = mod;
+    for (int i = 0, j = 0; i < countof(ppu->mosaicModulo); i++) {
+      ppu->mosaicModulo[i] = i - j;
+      j = (j + 1 == mod ? 0 : j + 1);
     }
-
-
+  }
+  if(line == 0) {
     // pre-render line
     // TODO: this now happens halfway into the first line
     ppu->mosaicStartLine = 1;
