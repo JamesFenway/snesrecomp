@@ -754,7 +754,7 @@ void cpu_write16(CpuState *cpu, uint8 bank, uint16 addr, uint16 v) {
  * a region boundary, e.g. $00:1FFF->$00:2000). */
 uint8_t cpu_read8_paced(CpuState *cpu, uint8_t bank, uint16_t addr) {
     uint32_t _sp = cpu_region_speed(((uint32_t)bank << 16) | addr);
-    cpu->master_cycles += _sp;
+    cpu->master_cycles += SNES_CPU_CLOCKS(_sp);
     {
         static int _pl = -1;
         if (_pl < 0) _pl = getenv("SNESRECOMP_PACELOG") ? 1 : 0;
@@ -770,7 +770,7 @@ uint8_t cpu_read8_paced(CpuState *cpu, uint8_t bank, uint16_t addr) {
 uint16_t cpu_read16_paced(CpuState *cpu, uint8_t bank, uint16_t addr) {
     uint32_t _sp = cpu_region_speed(((uint32_t)bank << 16) | addr) +
         cpu_region_speed(((uint32_t)bank << 16) | (uint16_t)(addr + 1));
-    cpu->master_cycles += _sp;
+    cpu->master_cycles += SNES_CPU_CLOCKS(_sp);
     {
         static int _pl = -1;
         if (_pl < 0) _pl = getenv("SNESRECOMP_PACELOG") ? 1 : 0;
@@ -785,7 +785,7 @@ uint16_t cpu_read16_paced(CpuState *cpu, uint8_t bank, uint16_t addr) {
 
 void cpu_write8_paced(CpuState *cpu, uint8_t bank, uint16_t addr, uint8_t v) {
     uint32_t _sp = cpu_region_speed(((uint32_t)bank << 16) | addr);
-    cpu->master_cycles += _sp;
+    cpu->master_cycles += SNES_CPU_CLOCKS(_sp);
     {
         static int _pl = -1;
         if (_pl < 0) _pl = getenv("SNESRECOMP_PACELOG") ? 1 : 0;
@@ -801,7 +801,7 @@ void cpu_write8_paced(CpuState *cpu, uint8_t bank, uint16_t addr, uint8_t v) {
 void cpu_write16_paced(CpuState *cpu, uint8_t bank, uint16_t addr, uint16_t v) {
     uint32_t _sp = cpu_region_speed(((uint32_t)bank << 16) | addr) +
         cpu_region_speed(((uint32_t)bank << 16) | (uint16_t)(addr + 1));
-    cpu->master_cycles += _sp;
+    cpu->master_cycles += SNES_CPU_CLOCKS(_sp);
     {
         static int _pl = -1;
         if (_pl < 0) _pl = getenv("SNESRECOMP_PACELOG") ? 1 : 0;

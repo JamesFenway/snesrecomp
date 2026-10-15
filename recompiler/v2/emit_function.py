@@ -109,19 +109,19 @@ def _dynamic_charge_lines(insn, speed_expr: str = "8") -> List[str]:
     if 'dp' in charges:
         out.append(
             f"if (cpu->D & 0xFF) {{ cpu->cycles += 1; "
-            f"cpu->master_cycles += {speed_expr}; }}  /* D.l != 0 */")
+            f"cpu->master_cycles += SNES_CPU_CLOCKS({speed_expr}); }}  /* D.l != 0 */")
     if 'xcross' in charges:
         mode = getattr(insn, 'mode', None)
         base = getattr(insn, 'operand', 0) & 0xFFFF
         if mode == _MODE_ABS_X:
             out.append(
                 f"if ((0x{base:04X} & 0xFF00) != ((0x{base:04X} + cpu->X) & 0xFF00))"
-                f" {{ cpu->cycles += 1; cpu->master_cycles += {speed_expr}; }}"
+                f" {{ cpu->cycles += 1; cpu->master_cycles += SNES_CPU_CLOCKS({speed_expr}); }}"
                 f"  /* abs,X read page-cross */")
         elif mode == _MODE_ABS_Y:
             out.append(
                 f"if ((0x{base:04X} & 0xFF00) != ((0x{base:04X} + cpu->Y) & 0xFF00))"
-                f" {{ cpu->cycles += 1; cpu->master_cycles += {speed_expr}; }}"
+                f" {{ cpu->cycles += 1; cpu->master_cycles += SNES_CPU_CLOCKS({speed_expr}); }}"
                 f"  /* abs,Y read page-cross */")
         # INDIR_Y (dp),Y: effective pointer is loaded at runtime from DP — not
         # reconstructable from the static operand; left as a measured residual.
@@ -1514,7 +1514,7 @@ def emit_function(rom: bytes, bank: int, start: int,
                         # code runs e=0).
                         lines.append(
                             f"if ({pred}) {{ cpu->cycles += 1; "
-                            f"cpu->master_cycles += {_blk_spd_expr}; {target_stmt} }}")
+                            f"cpu->master_cycles += SNES_CPU_CLOCKS({_blk_spd_expr}); {target_stmt} }}")
                     if fall is not None:
                         lines.append(_goto_or_return(fall, source_pc24=blk_pc24)
                                      + " /* fall-through */")
@@ -2158,9 +2158,9 @@ def emit_function(rom: bytes, bank: int, start: int,
             src.append(f'    cpu->cycles += {_cyc_const};')
             _spd_expr, _spd_const = _block_speed(bank, key.pc)
             if _spd_const is not None:
-                src.append(f'    cpu->master_cycles += {_cyc_const * _spd_const};')
+                src.append(f'    cpu->master_cycles += SNES_CPU_CLOCKS({_cyc_const * _spd_const});')
             else:
-                src.append(f'    cpu->master_cycles += {_cyc_const} * {_spd_expr};')
+                src.append(f'    cpu->master_cycles += SNES_CPU_CLOCKS({_cyc_const} * {_spd_expr});')
         for ln in block_lines[key]:
             # Inject a stack-auditor pop before any return so the shadow
             # stack stays balanced. An LLE yield unwind is NOT a return: the

@@ -214,6 +214,9 @@ int interp_bridge_lle_took_quiescent(void);
  * clock reaches this value.  Event-driven game schedulers use this to prevent
  * a productive CPU/MMIO loop from running across multiple vblanks atomically. */
 void interp_bridge_set_master_deadline(uint64_t master_clock);
+/* The armed deadline (0 = none), for a title's idle-skip hook that must not
+ * step the CPU clock past the frame boundary. */
+uint64_t interp_bridge_master_deadline(void);
 void interp_bridge_reset_dynamic_cache(void);
 
 /* True only while a paired AOT bounce is executing inside an auto-quiescent

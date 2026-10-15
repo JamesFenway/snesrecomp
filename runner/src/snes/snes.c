@@ -9,6 +9,15 @@
 #include <time.h>
 #include "snes.h"
 #include "cpu.h"
+
+/* CPU overclock (cpu_state.h): defined here so every target that links the
+ * SNES core has them, the reference tool included. */
+uint8_t g_snes_cpu_clock_shift;
+uint8_t g_snes_cpu_overclock_shift;
+
+void snes_cpu_overclock_refresh(int nmi_enabled) {
+  g_snes_cpu_clock_shift = nmi_enabled ? g_snes_cpu_overclock_shift : 0;
+}
 #include "apu.h"
 #include "dma.h"
 #include "ppu.h"
@@ -236,6 +245,7 @@ void snes_reset(Snes* snes, bool hard) {
   snes->hIrqEnabled = false;
   snes->vIrqEnabled = false;
   snes->nmiEnabled = false;
+  snes_cpu_overclock_refresh(0);
   snes->hTimer = 0x1ff;
   snes->vTimer = 0x1ff;
   snes->inNmi = false;
@@ -741,6 +751,7 @@ void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val) {
         }
       }
       snes->nmiEnabled = val & 0x80;
+      snes_cpu_overclock_refresh(snes->nmiEnabled);
       if(!snes->hIrqEnabled && !snes->vIrqEnabled) {
         snes->inIrq = false;
       }

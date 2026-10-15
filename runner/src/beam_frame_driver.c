@@ -131,6 +131,8 @@ void snes_beam_frame_driver_run_frame(void) {
   }
   const bool booting = s_resume_pc == 0;
   int slices = 0;
+  /* A savestate load restores NMITIMEN without a register write. */
+  snes_cpu_overclock_refresh(g_snes->nmiEnabled);
   uint64_t frame_end;
 
   /* The field ends at the beam's next V=225, measured from the BEAM: the

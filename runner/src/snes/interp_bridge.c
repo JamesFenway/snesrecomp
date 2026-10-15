@@ -241,7 +241,8 @@ static uint8_t bridge_bus_read(void *mem, uint32_t adr) {
      * this access first. The opcode's closing sync walks the rest. */
     if (s_interp_bus_timing_active && g_snes && (uint16_t)adr == 0x4210 &&
         ((adr >> 16) < 0x40 || ((adr >> 16) >= 0x80 && (adr >> 16) < 0xC0)))
-        snes_sync_master_clock(g_snes, cpu->master_cycles + s_interp_bus_master);
+        snes_sync_master_clock(g_snes, cpu->master_cycles +
+                                           SNES_CPU_CLOCKS(s_interp_bus_master));
     uint8_t value=cpu_read8(cpu,(uint8)((adr>>16)&0xff),(uint16)adr);
     if (continuous) {
         BridgeDynamicValue *d=&s_bridge_dynamic_values[(adr^(adr>>8)^(adr>>16))&63];
@@ -894,6 +895,10 @@ int interp_bridge_lle_took_quiescent(void) {
 }
 void interp_bridge_set_master_deadline(uint64_t master_clock) {
     s_lle_master_deadline = master_clock;
+}
+
+uint64_t interp_bridge_master_deadline(void) {
+    return s_lle_master_deadline;
 }
 
 int interp_bridge_lle_master_deadline_reached(const CpuState *cpu) {
@@ -2482,7 +2487,8 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
         {
             unsigned _internal = (unsigned)_cyc > s_interp_bus_cycles
                                ? (unsigned)_cyc - s_interp_bus_cycles : 0;
-            uint64_t _master = s_interp_bus_master + (uint64_t)_internal * 6u;
+            uint64_t _master = SNES_CPU_CLOCKS(s_interp_bus_master +
+                                               (uint64_t)_internal * 6u);
             g_interp_bridge_steps++;
             cpu->cycles        += (uint64_t)_cyc;
             cpu->master_cycles += _master;

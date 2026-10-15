@@ -183,6 +183,21 @@ typedef struct CpuState {
     uint64_t coprocessor_master_cycles;
 } CpuState;
 
+/* CPU overclock: every CPU-side master-clock charge (generated blocks and
+ * their runtime modifiers, paced AOT bus accesses, interpreted opcodes) is
+ * shifted right by this. 0 = hardware speed and exactly the old charges;
+ * 1 = twice as many instructions per field, 2 = four times. DMA, refresh,
+ * parked time and the beam/APU/coprocessor clocks are untouched, so only
+ * how much the CPU gets done per frame changes. Host policy, never saved. */
+extern uint8_t g_snes_cpu_clock_shift;
+#define SNES_CPU_CLOCKS(clocks) ((uint64_t)(clocks) >> g_snes_cpu_clock_shift)
+/* The shift a host asked for. g_snes_cpu_clock_shift follows it only while
+ * NMI is enabled ($4200 bit 7): games load and upload with NMI off, and the
+ * busy-wait timeouts there (a sound-CPU handshake counted in loop passes)
+ * are real time on hardware. snes_cpu_overclock_refresh() applies it. */
+extern uint8_t g_snes_cpu_overclock_shift;
+void snes_cpu_overclock_refresh(int nmi_enabled);
+
 /* NB: NLR pending-skip state is intentionally NOT a CpuState field.
  * It's declared as a function-local `RecompReturn _pending_skip` at
  * the top of every emitted v2 function — see emit_function.py. NLR
