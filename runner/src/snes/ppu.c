@@ -174,6 +174,7 @@ void ppu_rb_residue_set(Ppu *ppu, const PpuRollbackResidue *in) {
 uint8_t g_snes_ppu_dbg_layer_mask = 0xff;
 
 void PpuBeginDrawing(Ppu *ppu, uint8_t *pixels, size_t pitch, uint32_t render_flags) {
+  PpuFlushMode7Hd(ppu);
   static bool mask_init;
   if (!mask_init) {
     mask_init = true;
@@ -197,6 +198,7 @@ bool PpuBindMode7HdSurface(Ppu *ppu, uint32_t *pixels, size_t capacity,
                             size_t pitch, unsigned width, unsigned height,
                             unsigned scale) {
   if (!ppu) return false;
+  PpuFlushMode7Hd(ppu);
   if (!pixels) {
     memset(&ppu->mode7Hd, 0, sizeof(ppu->mode7Hd));
     return true;
@@ -2523,20 +2525,48 @@ static bool PpuHdWindowCondition(unsigned mode, bool inside) {
   return mode == 3 || (mode == 1 && !inside) || (mode == 2 && inside);
 }
 
+/* One HD Mode 7 line's inputs, captured while the line is the PPU's current
+ * one. Rendering reads only this record, picture memory and the surface, so
+ * lines can be rendered later and in parallel (PpuSetMode7HdDeferred). */
+typedef struct PpuHdLine {
+  uint8_t *first;               /* surface row (line - 1) * scale */
+  size_t pitch;
+  unsigned scale, width, extra_left_right;
+  int extra_left, extra_right;  /* extraLeftCur / extraRightCur */
+  const uint16_t *vram;
+  SnesMode7HdTransform transform;
+  bool extra_objects;
+  uint8_t cgwsel, cgadsub;
+  uint16_t fixed_colour;
+  uint8_t bright[32 + 31];
+  uint16_t cgram[256];
+  uint8_t visibility[kPpuBufWidth];
+  uint16_t object[kPpuBufWidth];
+  uint16_t object_colour[kPpuBufWidth];  /* only with extra_objects */
+} PpuHdLine;
+
+static uint16_t PpuHdPixelColour(const PpuHdLine *l, uint16_t pixel, size_t x) {
+  unsigned layer = (pixel >> 8) & 15;
+  if (l->extra_objects && (layer == 4 || layer == 6) &&
+      (l->object_colour[x] & 0x8000))
+    return l->object_colour[x] & 0x7fff;
+  return l->cgram[pixel & 255];
+}
+
 /* Resolve colour after HD background sampling and native OBJ priority. An
  * opaque native BG pixel cannot serve as a mask: a fractional sample may be
  * transparent and reveal a sprite that the native sample had covered. */
-static uint32_t PpuHdColour(const Ppu *ppu, uint16_t main, uint16_t sub,
+static uint32_t PpuHdColour(const PpuHdLine *l, uint16_t main, uint16_t sub,
                             bool inside, size_t x) {
   unsigned layer = (main >> 8) & 15;
-  unsigned colour = PpuPixelColor(ppu,main,x);
-  bool clip = PpuHdWindowCondition(PPU_clipMode(ppu), inside);
-  bool math = !PpuHdWindowCondition(PPU_preventMathMode(ppu), inside) &&
-      (PPU_mathEnabled(ppu) & (1u << layer));
-  unsigned other = ppu->fixedColor;
-  bool half = math && PPU_halfColor(ppu);
-  if (math && PPU_addSubscreen(ppu)) {
-    if (sub & 255) other = PpuPixelColor(ppu,sub,x);
+  unsigned colour = PpuHdPixelColour(l, main, x);
+  bool clip = PpuHdWindowCondition(l->cgwsel >> 6 & 0x3, inside);
+  bool math = !PpuHdWindowCondition(l->cgwsel >> 4 & 0x3, inside) &&
+      ((l->cgadsub & 0x3f) & (1u << layer));
+  unsigned other = l->fixed_colour;
+  bool half = math && (l->cgadsub & 0x40);
+  if (math && (l->cgwsel & 0x2)) {
+    if (sub & 255) other = PpuHdPixelColour(l, sub, x);
     else half = false;
   }
   uint32_t output = 0;
@@ -2544,12 +2574,12 @@ static uint32_t PpuHdColour(const Ppu *ppu, uint16_t main, uint16_t sub,
     int value = clip ? 0 : (colour >> (5 * c)) & 31;
     if (math) {
       int second = (other >> (5 * c)) & 31;
-      value += PPU_subtractColor(ppu) ? -second : second;
+      value += (l->cgadsub & 0x80) ? -second : second;
       if (value < 0) value = 0;
       if (half) value /= 2;
       if (value > 31) value = 31;
     }
-    output |= (uint32_t)ppu->brightnessMult[value] << (16 - 8 * c);
+    output |= (uint32_t)l->bright[value] << (16 - 8 * c);
   }
   return output;
 }
@@ -2565,18 +2595,163 @@ static void PpuHdMarkWindow(uint8_t visibility[kPpuBufWidth],
   }
 }
 
+/* Per-participant colour table: a sample whose sprite does not win resolves
+ * from its palette index and three visibility bits (main, sub, colour
+ * window) alone, so those colours are kept per line, filled lazily. */
+typedef struct PpuHdScratch {
+  uint32_t lut[8][256];
+  uint32_t tag[8][256];
+  uint32_t stamp;
+} PpuHdScratch;
+enum { kPpuHdMaxSlots = 32 };
+static PpuHdScratch s_hd_scratch[kPpuHdMaxSlots];
+
+static void PpuRenderHdLine(const PpuHdLine *l, PpuHdScratch *scratch) {
+  const SnesMode7HdTransform transform = l->transform;
+  const unsigned scale = l->scale, width = l->width;
+  const uint16_t *vram = l->vram;
+  double offsets[4]; /* The surface binding accepts scales 1..4. */
+  for (unsigned sx = 0; sx < scale; ++sx) offsets[sx] = (double)sx / scale;
+  /* At 2x and 4x every coordinate is a binary fraction with at most
+   * 8 + log2(scale) fractional bits and fits a double exactly, so the
+   * affine expression equals the integer numerator below divided by
+   * 256 * scale: stepping it by one add per sample and shifting floors to
+   * the very texel the double expression does. 3x keeps the doubles. */
+  const bool exact_steps = scale == 2 || scale == 4;
+  const unsigned exact_shift = scale == 2 ? 9 : 10;
+  const int64_t origin_x = llrint(transform.origin_x * 256.0);
+  const int64_t origin_y = llrint(transform.origin_y * 256.0);
+  const int64_t step_x = llrint(transform.step_x * 256.0);
+  const int64_t step_y = llrint(transform.step_y * 256.0);
+  const int64_t row_x = llrint(transform.row_x * 256.0);
+  const int64_t row_y = llrint(transform.row_y * 256.0);
+  if (++scratch->stamp == 0) {
+    memset(scratch->tag, 0, sizeof(scratch->tag));
+    scratch->stamp = 1;
+  }
+  const uint32_t stamp = scratch->stamp;
+  for (unsigned sy = 0; sy < scale; ++sy) {
+    uint32_t *row = (uint32_t *)(l->first + sy * l->pitch);
+    memset(row, 0, width * scale * sizeof(uint32_t));
+    double subline = (double)sy / scale;
+    double left = -l->extra_left, right = 256 + l->extra_right;
+    double dy_x = subline * transform.row_x, dy_y = subline * transform.row_y;
+    bool bounded = SnesMode7HdSpanFits(
+        transform.origin_x + left * transform.step_x + dy_x,
+        transform.origin_y + left * transform.step_y + dy_y,
+        transform.origin_x + right * transform.step_x + dy_x,
+        transform.origin_y + right * transform.step_y + dy_y, INT_MAX);
+    const bool exact = exact_steps && bounded;
+    const int64_t first_sample = (int64_t)(-l->extra_left) * scale;
+    int64_t num_x = origin_x * scale + first_sample * step_x + (int64_t)sy * row_x;
+    int64_t num_y = origin_y * scale + first_sample * step_y + (int64_t)sy * row_y;
+    int last_x = INT_MIN, last_y = INT_MIN;
+    uint8_t index = 0;
+    for (int x = -l->extra_left; x < 256 + l->extra_right; ++x) {
+      unsigned i = (unsigned)(x + kPpuExtraLeftRight);
+      uint8_t visible = l->visibility[i];
+      uint16_t object = l->object[i];
+      const unsigned lut_row = (visible & 3) | ((visible & 16) >> 2);
+      uint32_t *out = row + (x + (int)l->extra_left_right) * scale;
+      for (unsigned sx = 0; sx < scale; ++sx) {
+        if (bounded) {
+          int tx, ty;
+          if (exact) {
+            tx = (int)(num_x >> exact_shift);
+            ty = (int)(num_y >> exact_shift);
+            num_x += step_x;
+            num_y += step_y;
+          } else {
+            double position = x + offsets[sx];
+            tx = SnesMode7HdFloorInt(transform.origin_x + position * transform.step_x + dy_x);
+            ty = SnesMode7HdFloorInt(transform.origin_y + position * transform.step_y + dy_y);
+          }
+          if (tx != last_x || ty != last_y) {
+            index = SnesMode7HdFetchInt(transform.control, vram, tx, ty, -1);
+            last_x = tx; last_y = ty;
+          }
+        } else {
+          index = SnesMode7HdSample(&transform, vram, x + offsets[sx], subline);
+        }
+        uint16_t bg = index ? (uint16_t)(0x5000 | index) : 0x0500;
+        uint16_t main = visible & 1 ? bg : 0x0500;
+        uint16_t sub = visible & 2 ? bg : 0x0500;
+        bool sprite = false;
+        if ((visible & 4) && object > main) { main = object; sprite = true; }
+        if ((visible & 8) && object > sub) { sub = object; sprite = true; }
+        if (sprite) {
+          out[sx] = PpuHdColour(l, main, sub, (visible & 16) != 0, i);
+        } else {
+          if (scratch->tag[lut_row][index] != stamp) {
+            scratch->lut[lut_row][index] =
+                PpuHdColour(l, main, sub, (visible & 16) != 0, i);
+            scratch->tag[lut_row][index] = stamp;
+          }
+          out[sx] = scratch->lut[lut_row][index];
+        }
+      }
+    }
+  }
+}
+
+/* Deferred rendering (PpuSetMode7HdDeferred). One presenting PPU at a time:
+ * lines captured for another PPU, or before a rebind, flush first. */
+static struct {
+  Ppu *owner;
+  bool enabled;
+  PpuParallelExecutor *executor;
+  void *executor_context;
+  unsigned slots;
+  unsigned count;
+  PpuHdLine lines[240];
+} s_hd_deferred;
+static PpuHdLine s_hd_immediate;
+
+static void PpuHdRenderRange(void *context, size_t begin, size_t end,
+                             unsigned slot) {
+  (void)context;
+  PpuHdScratch *scratch = &s_hd_scratch[slot < kPpuHdMaxSlots ? slot : 0];
+  for (size_t k = begin; k < end; ++k)
+    PpuRenderHdLine(&s_hd_deferred.lines[k], scratch);
+}
+
+void PpuFlushMode7Hd(Ppu *ppu) {
+  (void)ppu;
+  const unsigned count = s_hd_deferred.count;
+  if (!count) return;
+  s_hd_deferred.count = 0;
+  if (s_hd_deferred.executor && s_hd_deferred.slots > 1)
+    s_hd_deferred.executor(s_hd_deferred.executor_context, count,
+                           PpuHdRenderRange, NULL);
+  else
+    PpuHdRenderRange(NULL, 0, count, 0);
+}
+
+void PpuSetMode7HdDeferred(Ppu *ppu, bool enabled,
+                           PpuParallelExecutor *executor,
+                           void *executor_context, unsigned slots) {
+  PpuFlushMode7Hd(ppu);
+  s_hd_deferred.owner = enabled ? ppu : NULL;
+  s_hd_deferred.enabled = enabled;
+  s_hd_deferred.executor = enabled ? executor : NULL;
+  s_hd_deferred.executor_context = enabled ? executor_context : NULL;
+  s_hd_deferred.slots = slots > kPpuHdMaxSlots ? kPpuHdMaxSlots : slots;
+}
+
 static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
   const PpuMode7HdSurface *surface = &ppu->mode7Hd;
   if (!line || line > surface->height) return;
   const unsigned width = surface->width, scale = surface->scale;
   uint8_t *first = (uint8_t *)surface->pixels +
       (line - 1) * scale * surface->pitch;
+  const bool defer = s_hd_deferred.enabled && s_hd_deferred.owner == ppu;
   /* A host changing viewports must rebind. Clear instead of reading beyond
    * the native scanout or leaving an old scene visible in this surface. */
   if (!ppu->renderBuffer || width != 256u + 2u * ppu->extraLeftRight ||
       ppu->renderPitch < width * sizeof(uint32_t)) {
     for (unsigned sy = 0; sy < scale; ++sy)
       memset(first + sy * surface->pitch, 0, width * scale * sizeof(uint32_t));
+    if (defer && line == surface->height) PpuFlushMode7Hd(ppu);
     return;
   }
   bool hd = scale > 1 && PPU_mode(ppu) == 7 &&
@@ -2598,10 +2773,13 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
       for (unsigned sx = 0; sx < scale; ++sx) row[x * scale + sx] = native[x];
     for (unsigned sy = 1; sy < scale; ++sy)
       memcpy(first + sy * surface->pitch, first, width * scale * sizeof(uint32_t));
+    if (defer && line == surface->height) PpuFlushMode7Hd(ppu);
     return;
   }
 
-  uint8_t visibility[kPpuBufWidth] = {0};
+  PpuHdLine *l = defer ? &s_hd_deferred.lines[s_hd_deferred.count++]
+                       : &s_hd_immediate;
+  memset(l->visibility, 0, sizeof(l->visibility));
   PpuWindows window;
   for (unsigned sub = 0; sub < 2; ++sub) {
     for (unsigned object = 0; object < 2; ++object) {
@@ -2611,68 +2789,34 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
         PpuWindows_Calc(&window, ppu, layer, (int)line);
       else
         PpuWindows_Clear(&window, ppu, layer, (int)line);
-      PpuHdMarkWindow(visibility, &window, (uint8_t)(1u << (sub + 2 * object)), false);
+      PpuHdMarkWindow(l->visibility, &window, (uint8_t)(1u << (sub + 2 * object)), false);
     }
   }
   PpuWindows_Calc(&window, ppu, 5, (int)line);
-  PpuHdMarkWindow(visibility, &window, 16, true);
-  SnesMode7HdTransform transform =
-      SnesMode7HdMakeTransform(ppu->m7matrix, ppu->m7sel, line);
-  const uint16_t *vram = PpuRenderVram(ppu);
-  double offsets[4]; /* The surface binding accepts scales 1..4. */
-  for (unsigned sx = 0; sx < scale; ++sx) offsets[sx] = (double)sx / scale;
-  /* Neighbouring samples mostly resolve the same inputs (a magnified texel,
-   * an unchanged sprite pixel), so the last colour is reused while they
-   * match. PpuPixelColor reads x only for extra objects; include x in the
-   * key then. Registers are fixed for the line, so the key is complete. */
-  const uint64_t x_key_shift = ppu->extraObjectCount ? 40 : 64;
-  uint64_t last_key = UINT64_MAX;
-  uint32_t colour = 0;
-  for (unsigned sy = 0; sy < scale; ++sy) {
-    uint32_t *row = (uint32_t *)(first + sy * surface->pitch);
-    memset(row, 0, width * scale * sizeof(uint32_t));
-    double subline = (double)sy / scale;
-    double left = -(int)ppu->extraLeftCur, right = 256 + ppu->extraRightCur;
-    double dy_x = subline * transform.row_x, dy_y = subline * transform.row_y;
-    bool bounded = SnesMode7HdSpanFits(
-        transform.origin_x + left * transform.step_x + dy_x,
-        transform.origin_y + left * transform.step_y + dy_y,
-        transform.origin_x + right * transform.step_x + dy_x,
-        transform.origin_y + right * transform.step_y + dy_y, INT_MAX);
-    int last_x = INT_MIN, last_y = INT_MIN;
-    uint8_t index = 0;
-    for (int x = -(int)ppu->extraLeftCur; x < 256 + ppu->extraRightCur; ++x) {
-      unsigned i = (unsigned)(x + kPpuExtraLeftRight);
-      uint8_t visible = visibility[i];
-      uint16_t object = ppu->objBuffer.data[i];
-      for (unsigned sx = 0; sx < scale; ++sx) {
-        double position = x + offsets[sx];
-        if (bounded) {
-          int tx = SnesMode7HdFloorInt(transform.origin_x + position * transform.step_x + dy_x);
-          int ty = SnesMode7HdFloorInt(transform.origin_y + position * transform.step_y + dy_y);
-          if (tx != last_x || ty != last_y) {
-            index = SnesMode7HdFetchInt(transform.control, vram, tx, ty, -1);
-            last_x = tx; last_y = ty;
-          }
-        } else {
-          index = SnesMode7HdSample(&transform, vram, position, subline);
-        }
-        uint16_t bg = index ? (uint16_t)(0x5000 | index) : 0x0500;
-        uint16_t main = visible & 1 ? bg : 0x0500;
-        uint16_t sub = visible & 2 ? bg : 0x0500;
-        if ((visible & 4) && object > main) main = object;
-        if ((visible & 8) && object > sub) sub = object;
-        uint64_t key = (uint64_t)main | (uint64_t)sub << 16 |
-            (uint64_t)(visible & 16) << 32 |
-            (x_key_shift < 64 ? (uint64_t)i << x_key_shift : 0);
-        if (key != last_key) {
-          colour = PpuHdColour(ppu, main, sub, (visible & 16) != 0, i);
-          last_key = key;
-        }
-        row[(x + ppu->extraLeftRight) * scale + sx] = colour;
-      }
-    }
-  }
+  PpuHdMarkWindow(l->visibility, &window, 16, true);
+  l->first = first;
+  l->pitch = surface->pitch;
+  l->scale = scale;
+  l->width = width;
+  l->extra_left_right = ppu->extraLeftRight;
+  l->extra_left = (int)ppu->extraLeftCur;
+  l->extra_right = (int)ppu->extraRightCur;
+  l->vram = PpuRenderVram(ppu);
+  l->transform = SnesMode7HdMakeTransform(ppu->m7matrix, ppu->m7sel, line);
+  l->extra_objects = ppu->extraObjectCount != 0;
+  l->cgwsel = ppu->cgwsel;
+  l->cgadsub = ppu->cgadsub;
+  l->fixed_colour = ppu->fixedColor;
+  memcpy(l->bright, ppu->brightnessMult, sizeof(l->bright));
+  memcpy(l->cgram, ppu->cgram, sizeof(l->cgram));
+  memcpy(l->object, ppu->objBuffer.data, sizeof(l->object));
+  if (l->extra_objects)
+    memcpy(l->object_colour, ppu->objectColors, sizeof(l->object_colour));
+  if (!defer)
+    PpuRenderHdLine(l, &s_hd_scratch[0]);
+  else if (line == surface->height ||
+           s_hd_deferred.count == countof(s_hd_deferred.lines))
+    PpuFlushMode7Hd(ppu);
 }
 
 static bool PpuWidescreenHudOamSlot(Ppu *ppu, uint8_t index, uint8_t y) {
@@ -3545,6 +3689,8 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
       break;
     }
     case 0x18: {
+      /* Deferred HD lines read picture memory as it was when captured. */
+      PpuFlushMode7Hd(ppu);
       // TODO: vram access during rendering (also cgram and oam)
       uint16_t vramAdr = ppu_getVramRemap(ppu);
       ppu->vram[vramAdr & 0x7fff] = (ppu->vram[vramAdr & 0x7fff] & 0xff00) | val;
@@ -3562,6 +3708,8 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
       break;
     }
     case 0x19: {
+      /* Deferred HD lines read picture memory as it was when captured. */
+      PpuFlushMode7Hd(ppu);
       uint16_t vramAdr = ppu_getVramRemap(ppu);
       ppu->vram[vramAdr & 0x7fff] = (ppu->vram[vramAdr & 0x7fff] & 0x00ff) | (val << 8);
       ppu->vramWriteCount++;

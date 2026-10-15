@@ -575,6 +575,23 @@ void ppu_runLine(Ppu* ppu, int line);
 bool PpuBindMode7HdSurface(Ppu *ppu, uint32_t *pixels, size_t capacity,
                             size_t pitch, unsigned width, unsigned height,
                             unsigned scale);
+/* Deferred HD Mode 7 (opt-in; off renders each line inside ppu_runLine as
+ * before). Each HD line's inputs are captured while it is the current line
+ * (matrix, windows, sprite pixels, palette and colour-math registers) and
+ * the lines are rendered together when the surface's last line is drawn,
+ * through `executor` when it is given and `slots` > 1, else serially. Output
+ * is identical to immediate rendering. Pending lines also render before a
+ * VRAM write, a rebind, PpuBeginDrawing and PpuFlushMode7Hd, so they never
+ * see later picture memory. `slots` bounds the slot numbers the executor
+ * passes (at most 32). */
+typedef void PpuParallelRange(void *context, size_t begin, size_t end,
+                              unsigned slot);
+typedef void PpuParallelExecutor(void *executor_context, size_t count,
+                                 PpuParallelRange *range, void *context);
+void PpuSetMode7HdDeferred(Ppu *ppu, bool enabled,
+                           PpuParallelExecutor *executor,
+                           void *executor_context, unsigned slots);
+void PpuFlushMode7Hd(Ppu *ppu);
 void ppu_sec_reset(void);
 void ppu_sec_read(double *eval, double *line, double *bg, double *spr,
                   double *compose, double *hdma);
