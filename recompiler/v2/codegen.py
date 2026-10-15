@@ -2526,6 +2526,15 @@ def _emit_return(op: Return) -> List[str]:
         "    if (_anc_skip >= 0) {",
         "      cpu_trace_mark_nlr_exit(BD_EXIT_KIND_TRAMPOLINE);",
         f"      return (RecompReturn)_anc_skip;  /* {label_inner} return-to-ancestor */ }}",
+        # A callee may relocate its own return frame above stack arguments,
+        # discard those arguments, then return to the original paired PC.
+        # Preserve that architectural S instead of sending a normal internal
+        # continuation through dispatch-miss's entry_s + frame_size restore.
+        # Ancestor resolution keeps priority; deeper synthetic frames and
+        # rewritten PCs must still follow the computed/non-local paths.
+        f"    if (_hrv == {frame_sz} && _rpc24 == _host_return_pc24 &&",
+        "        (uint16)(_ret_s - _entry_s) < 0x8000u) {",
+        f"      return RECOMP_RETURN_NORMAL;  /* {label_inner} callee-cleaned host return */ }}",
         # The nearest skipped ancestor can be a caller still running inside
         # the active interpreter rather than another generated function. Hand
         # the popped continuation back to that owner through the existing
