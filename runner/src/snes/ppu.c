@@ -691,13 +691,22 @@ static inline void ClearBackdrop(const Ppu *ppu, PpuPixelPrioBufs *buf) {
     *(uint64*)&buf->data[i] = 0x0500050005000500;
 }
 
-// mosaicModulo is sized for the logical 256-wide screen, but widescreen window
-// edges can fall in the border (negative on the left, >=256 on the right).
-// Clamp the lookup so the rare mosaic+widescreen combination stays in-bounds;
-// border mosaic alignment is approximate but never reads out of range. With
-// extra==0 (authentic) every index is already in [0,256), so this is a no-op.
-static inline uint8 PpuMosaicAt(Ppu *ppu, int i) {
-  return ppu->mosaicModulo[(unsigned)i < (unsigned)kPpuXPixels ? i : (i < 0 ? 0 : kPpuXPixels - 1)];
+// Start of the mosaic block holding screen column i. mosaicModulo covers the
+// logical 256-wide screen; widescreen window edges fall in the border
+// (negative on the left, >=256 on the right), where the hardware's grid --
+// blocks of PPU_mosaicSize aligned to x=0 -- simply continues. This used to
+// clamp to columns 0/255 instead, which made a margin span starting at -extra
+// one block extra+1 wide: a game that leaves mosaic enabled at size 1 (a
+// no-op on hardware; Super Star Wars does on every stage) got each margin row
+// smeared from its edge pixel in Mode 7. With extra==0 (authentic) every
+// index is in [0,256), so this is a no-op.
+static inline int PpuMosaicAt(Ppu *ppu, int i) {
+  if ((unsigned)i < (unsigned)kPpuXPixels)
+    return ppu->mosaicModulo[i];
+  const int size = PPU_mosaicSize(ppu);
+  int r = i % size;
+  if (r < 0) r += size;
+  return i - r;
 }
 
 /* Frame of the last OAM ring snapshot; see the note in ppu_runLine. Debug
