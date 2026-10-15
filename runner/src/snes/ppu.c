@@ -2621,6 +2621,13 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
   const uint16_t *vram = PpuRenderVram(ppu);
   double offsets[4]; /* The surface binding accepts scales 1..4. */
   for (unsigned sx = 0; sx < scale; ++sx) offsets[sx] = (double)sx / scale;
+  /* Neighbouring samples mostly resolve the same inputs (a magnified texel,
+   * an unchanged sprite pixel), so the last colour is reused while they
+   * match. PpuPixelColor reads x only for extra objects; include x in the
+   * key then. Registers are fixed for the line, so the key is complete. */
+  const uint64_t x_key_shift = ppu->extraObjectCount ? 40 : 64;
+  uint64_t last_key = UINT64_MAX;
+  uint32_t colour = 0;
   for (unsigned sy = 0; sy < scale; ++sy) {
     uint32_t *row = (uint32_t *)(first + sy * surface->pitch);
     memset(row, 0, width * scale * sizeof(uint32_t));
@@ -2655,8 +2662,14 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
         uint16_t sub = visible & 2 ? bg : 0x0500;
         if ((visible & 4) && object > main) main = object;
         if ((visible & 8) && object > sub) sub = object;
-        row[(x + ppu->extraLeftRight) * scale + sx] =
-            PpuHdColour(ppu, main, sub, (visible & 16) != 0, i);
+        uint64_t key = (uint64_t)main | (uint64_t)sub << 16 |
+            (uint64_t)(visible & 16) << 32 |
+            (x_key_shift < 64 ? (uint64_t)i << x_key_shift : 0);
+        if (key != last_key) {
+          colour = PpuHdColour(ppu, main, sub, (visible & 16) != 0, i);
+          last_key = key;
+        }
+        row[(x + ppu->extraLeftRight) * scale + sx] = colour;
       }
     }
   }

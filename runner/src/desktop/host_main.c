@@ -1163,22 +1163,39 @@ static void NoteStateFrame(void) {
   snes_rewind_note_frame();
 }
 
+/* The present's multiple of the frame size (SnesDesktopHostGame.present_scale),
+ * set by DrawPpuFrameWithPerf for the frame being composed. */
+static int g_render_scale = 1;
+
 void RtlDrawPpuFrame(uint8 *pixel_buffer, size_t pitch, uint32 render_flags) {
   (void)render_flags;
   if (!pixel_buffer) return;
+  const int scale = g_render_scale;
   if (g_game->draw_frame &&
-      g_game->draw_frame(pixel_buffer, pitch, g_my_pixels, g_snes_width,
-                         g_snes_height, g_present_alpha)) {
+      g_game->draw_frame(pixel_buffer, pitch, g_my_pixels, g_snes_width * scale,
+                         g_snes_height * scale, g_present_alpha)) {
     /* Publish what the title actually composed. The debug surface otherwise
      * captures g_ppu->renderBuffer, which for a game-owned compositor is the
      * authentic 256-column raster it composed FROM -- so a wide frame reads
      * as correct in a capture while the player is looking at something the
      * capture never saw. Trace builds only; a no-op stub otherwise. */
     debug_server_note_composed_frame(pixel_buffer, (unsigned)pitch,
-                                     g_snes_width, g_snes_height);
+                                     g_snes_width * scale,
+                                     g_snes_height * scale);
     return;
   }
   debug_server_note_composed_frame(NULL, 0, 0, 0);
+  if (scale > 1) {
+    /* The title asked for a scaled present but composed nothing: show the
+     * field, nearest-neighbour, rather than a quarter-size frame. */
+    for (int y = 0; y < g_snes_height * scale; y++) {
+      const uint32 *src = (const uint32 *)(g_my_pixels +
+          (size_t)(y / scale) * (size_t)g_snes_width * 4);
+      uint32 *dst = (uint32 *)(pixel_buffer + (size_t)y * pitch);
+      for (int x = 0; x < g_snes_width * scale; x++) dst[x] = src[x / scale];
+    }
+    return;
+  }
   RtlWidescreenPresent(pixel_buffer, pitch, g_my_pixels, g_snes_width, g_snes_height);
 }
 
@@ -1250,7 +1267,12 @@ static void WritePpm(const char *path, const uint8 *pixel_buffer, int pitch,
 static void DrawPpuFrameWithPerf(void) {
   double profile_start = ProfileStart();
   PreparePpuFrame();
-  const int render_scale = 1;
+  int render_scale = 1;
+  if (g_game->present_scale && g_game->draw_frame) {
+    const int s = g_game->present_scale();
+    if (s >= 1 && s <= 4) render_scale = s;
+  }
+  g_render_scale = render_scale;
   uint8 *present_buffer = 0;
   int present_pitch = 0;
 
@@ -1328,7 +1350,21 @@ static void DrawPpuFrameWithPerf(void) {
    * from a modal loop pushes an interrupt frame every 8ms into a guest that
    * is not executing. That is what locked Super Metroid up when the
    * save-state browser was opened. */
-  {
+  if (render_scale > 1) {
+    /* The overlays draw over a 1x frame; keep every scale-th pixel. */
+    const int rows = g_snes_height, cols = g_snes_width;
+    if (rows > 0 && cols > 0 &&
+        (size_t)rows * (size_t)cols * 4 <= sizeof(g_frozen_frame)) {
+      for (int y = 0; y < rows; y++) {
+        const uint32 *src = (const uint32 *)(pixel_buffer +
+            (size_t)y * render_scale * (size_t)pitch);
+        uint32 *dst = (uint32 *)(g_frozen_frame + (size_t)y * cols * 4);
+        for (int x = 0; x < cols; x++) dst[x] = src[x * render_scale];
+      }
+      g_frozen_w = cols;
+      g_frozen_h = rows;
+    }
+  } else {
     const int rows = g_snes_height * render_scale;
     const int row_bytes = g_snes_width * render_scale * 4;
     if (rows > 0 && row_bytes > 0 &&
@@ -1341,7 +1377,7 @@ static void DrawPpuFrameWithPerf(void) {
     }
   }
   ComposeOsd(pixel_buffer, pitch, g_snes_width * render_scale,
-             g_snes_height * render_scale, 2);
+             g_snes_height * render_scale, render_scale > 1 ? 1 : 2);
   /* Use the same completed simulation index as the common WRAM dumper. */
   const uint32 dump_frame = snes_frame_counter ? snes_frame_counter - 1 : 0;
   FrameDump_Present(dump_frame, pixel_buffer, pitch,

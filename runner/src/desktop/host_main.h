@@ -197,6 +197,12 @@ typedef struct SnesDesktopHostGame {
   /* After the gameplay loop ends, before SDL resources are destroyed or a
    * relaunch begins. Stop title-owned workers here. No further frames run. */
   void (*on_shutdown)(void);
+  /* Present at a multiple of the frame size (1..4; 0 or NULL = 1). Honoured
+   * only with draw_frame, which is then asked for frame_w x frame_h already
+   * multiplied by this scale (an HD Mode 7 surface, PpuBindMode7HdSurface).
+   * Read once per present, so a port may change it between frames. Overlays,
+   * thumbnails and rewind keep working at 1x from the PPU's own field. */
+  int (*present_scale)(void);
 } SnesDesktopHostGame;
 
 /* The whole program. Returns the process exit code. */
