@@ -602,6 +602,12 @@ void ppu_rasterApplyLine(Ppu *ppu, int line);
 void ppu_rasterFieldBoundary(void);
 /* Disarm, for a machine rebuild (session reset). */
 void ppu_rasterReset(void);
+/* Snapshot / put back the whole journal, around guest code run outside the
+ * frame (a presentation sandbox): its beam syncs can close a field. */
+typedef struct PpuRasterJournalState PpuRasterJournalState;
+size_t ppu_rasterJournalStateSize(void);
+void ppu_rasterJournalSave(PpuRasterJournalState *st);
+void ppu_rasterJournalLoad(const PpuRasterJournalState *st);
 
 /* Scanout latch bypass — set by the debug server around render_inject so an
  * injected OAM/CGRAM state is rendered as given. A frame-model host that

@@ -3648,3 +3648,42 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
       break;
   }
 }
+
+/* The whole journal, for a caller that runs guest code outside the frame and
+ * must leave no trace (a presentation sandbox): a hardware-register read
+ * there syncs the beam, which can cross V=225 and close a field, flipping
+ * the journal and dropping the field the next render replays. */
+struct PpuRasterJournalState {
+  PpuRasterField field[2];
+  int cur, armed, have_completed, rendering, next, hdmaen_pending;
+  const PpuRasterField *render;
+  uint8_t hdmaen;
+};
+
+size_t ppu_rasterJournalStateSize(void) {
+  return sizeof(PpuRasterJournalState);
+}
+
+void ppu_rasterJournalSave(PpuRasterJournalState *st) {
+  memcpy(st->field, s_field, sizeof s_field);
+  st->cur = s_raster_cur;
+  st->armed = s_raster_armed;
+  st->have_completed = s_raster_have_completed;
+  st->rendering = s_raster_rendering;
+  st->render = s_raster_render;
+  st->next = s_raster_next;
+  st->hdmaen = s_raster_hdmaen;
+  st->hdmaen_pending = s_raster_hdmaen_pending;
+}
+
+void ppu_rasterJournalLoad(const PpuRasterJournalState *st) {
+  memcpy(s_field, st->field, sizeof s_field);
+  s_raster_cur = st->cur;
+  s_raster_armed = st->armed;
+  s_raster_have_completed = st->have_completed;
+  s_raster_rendering = st->rendering;
+  s_raster_render = st->render;
+  s_raster_next = st->next;
+  s_raster_hdmaen = st->hdmaen;
+  s_raster_hdmaen_pending = st->hdmaen_pending;
+}
