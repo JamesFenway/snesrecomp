@@ -719,6 +719,7 @@ static const char *const k_resume_site_names[INTERP_RESUME_SITE_COUNT] = {
     [INTERP_RESUME_SITE_STEP_CAP]        = "step_cap",
     [INTERP_RESUME_SITE_EXTERNAL]        = "external",
     [INTERP_RESUME_SITE_ROLLBACK]        = "rollback",
+    [INTERP_RESUME_SITE_NESTED_DEADLINE] = "nested_deadline",
 };
 static const char *const k_resume_kind_names[] = {
     "set", "unwind_arm", "unwind_consume", "restore",
@@ -1679,6 +1680,30 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
             cpu->master_cycles >= s_lle_master_deadline) {
             lle_resume_set(pc_before, INTERP_RESUME_SITE_DEADLINE, in.sp);
             sync_interp_to_cpu(&in,cpu);
+            bridge_apu_flush(cpu);
+            return 1;
+        }
+        /* A NESTED frame (a tier-down run opened by compiled code: dispatch
+         * gap, bank miss, call frame) under a scheduler that owns the host's
+         * master deadline. It has no deadline exit of its own, so a frame wait
+         * reached this way (wait for the NMI counter to move, reached through
+         * an unresolved call from compiled code) spun to the step cap with the
+         * host unable to deliver the NMI: one cap-length stall per wait.
+         * Compiled blocks under the same owner already unwind at the deadline
+         * (interp_bridge_lle_master_deadline_reached); do the same here: arm
+         * a deadline unwind at this PC, end this frame, and let the tier
+         * helper hand the sentinel through the compiled callers to the
+         * scheduler, which publishes the PC and resumes it interpreted next
+         * time. Not in an interrupt handler: the host resumes a scheduler
+         * continuation, never the middle of a handler. */
+        if (!yield_pc && s_lle_master_deadline &&
+            s_lle_sched_depth > 0 && s_interp_bounce_owner_depth > 0 &&
+            s_interp_bridge_depth > s_interp_bounce_owner_depth &&
+            cpu->master_cycles >= s_lle_master_deadline &&
+            !cpu_interrupt_context_active()) {
+            lle_unwind_arm(pc_before, s_interp_bounce_owner_depth, 1,
+                           INTERP_RESUME_SITE_NESTED_DEADLINE, in.sp);
+            sync_interp_to_cpu(&in, cpu);
             bridge_apu_flush(cpu);
             return 1;
         }

@@ -42,6 +42,8 @@ static int      g_aot_skips_interp_owner;
 static int      g_aot_deadline_unwind;
 static int      g_aot_nested_deadline;
 static int      g_after_nested_deadline;
+static int      g_aot_nested_wait;
+static int      g_after_nested_wait;
 static int      g_aot_gap_walks_into_wait;
 static int      g_owner_target_result;
 static int      g_aot_tail_chain_probe;
@@ -60,6 +62,8 @@ static Snes g_test_snes;
 Snes *g_snes = &g_test_snes;
 uint64_t g_apu_last_sync_master;
 int g_interp_apu_driving;
+/* snes.c in the real runner: the CPU-side clock divisor (0 = hardware). */
+uint8_t g_snes_cpu_clock_shift;
 static bool g_frame_timeline, g_extended_frames;
 static unsigned g_absolute_syncs, g_relative_syncs;
 bool rtl_apu_frame_timeline_active(void) { return g_frame_timeline; }
@@ -218,6 +222,15 @@ RecompReturn cpu_dispatch_pc_paired(CpuState *cpu, uint32 pc24,
         cpu->A = 0xdead;
         if (interp_bridge_lle_master_deadline_reached(cpu))
             return interp_bridge_lle_yield_unwind(cpu, 0x008104);
+        return result;
+    }
+    if (g_aot_nested_wait && pc24 == FAKE_AOT) {
+        /* Compiled root -> unresolved call into an interpreted frame wait. */
+        g_aot_called++;
+        RecompReturn result = interp_tier_dispatch_balanced(
+            cpu, 0x008300, FAKE_AOT, cpu->S, frame_size, false);
+        if (result != RECOMP_RETURN_NORMAL) return result;
+        ++g_after_nested_wait;   /* must not run once the deadline unwound */
         return result;
     }
     if (g_aot_nested_deadline && pc24 == FAKE_AOT_2) {
@@ -962,6 +975,55 @@ int main(void) {
               "resumed RTL/PLP/RTL must restore stack and reach caller");
       }
     }
+
+    /* S8h: auto-quiescent scheduler (the beam frame driver) -> compiled root
+     * -> nested tier frame -> a frame wait (spin on a RAM flag only the next
+     * frame's NMI sets). The nested frame has no yield contract and the
+     * stable-poll hand-off is off under an auto-quiescent owner, so it used
+     * to spin to the step cap. It must end at the host deadline, keep the
+     * guest stack, and publish the wait's PC; the compiled continuation must
+     * not run. Resumed after the flag is set, the wait completes and the
+     * scheduler continuation runs once. */
+    { memset(RAM, 0, MEMSZ); init_cpu(); g_aot_called = 0;
+      g_aot_nested_wait = 1; g_after_nested_wait = 0;
+      uint8_t scheduler[] = {
+          0x22,0x00,0x81,0x00,                 /* JSL fake compiled root */
+          0xA9,0x5A, 0x85,0x30,                /* scheduler continuation */
+          0xAD,0x21,0x00, 0xF0,0xFB            /* idle loop */
+      };
+      uint8_t wait[] = {
+          0xAD,0x20,0x00, 0xF0,0xFB,           /* LDA $0020 / BEQ (frame wait) */
+          0x6B                                 /* RTL (the root's tail) */
+      };
+      load(0x8000, scheduler, sizeof scheduler);
+      load(0x8300, wait, sizeof wait);
+      RAM[0x20] = 0;
+      g_c.master_cycles = 0;
+      interp_bridge_set_master_deadline(20000);
+      int rc = interp_bridge_run_until_quiescent(&g_c, 0x008000);
+      uint32_t resume = interp_bridge_lle_resume_pc();
+      printf("S8h nested frame wait ends at the auto-quiescent deadline\n");
+      CHECK(rc == 1, "rc=%d exp 1", rc);
+      CHECK(g_aot_called == 1, "aot_called=%d exp 1", g_aot_called);
+      CHECK(resume == 0x008300 || resume == 0x008303,
+            "resume=$%06X exp the wait loop ($008300/$008303)", (unsigned)resume);
+      CHECK(g_c.master_cycles < 200000,
+            "master=%llu: ran far past the deadline (step cap?)",
+            (unsigned long long)g_c.master_cycles);
+      CHECK(g_after_nested_wait == 0, "compiled continuation ran after the deadline");
+      CHECK(g_c.S == 0x01FC, "S=%04X exp 01FC (JSL frame kept)", g_c.S);
+      CHECK(RAM[0x30] == 0x00, "continuation ran before the wait ended");
+      RAM[0x20] = 1;                       /* the NMI the host delivered */
+      if (resume == 0x008300 || resume == 0x008303) {
+        /* Next field: a fresh deadline ends the idle loop. */
+        interp_bridge_set_master_deadline(g_c.master_cycles + 20000);
+        rc = interp_bridge_run_until_quiescent(&g_c, resume);
+        CHECK(rc == 1 && g_c.S == 0x01FF && RAM[0x30] == 0x5A,
+              "resumed wait must RTL to the scheduler (rc=%d S=%04X $30=%02X)",
+              rc, g_c.S, RAM[0x30]);
+      }
+      interp_bridge_set_master_deadline(0);
+      g_aot_nested_wait = 0; }
 
     /* S9: the same rewrite below the paired AOT root belongs to a compiled
      * ancestor, not directly to the scheduler interpreter.  Finish that
