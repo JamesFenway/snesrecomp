@@ -1587,7 +1587,9 @@ static void PpuDrawBackground_2bpp(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, b
     win.edges[5] = 256 + ppu->extraLeftRight;
     ws_bias[0] = ppu->extraLeftRight;
     ws_bias[4] = -(int16)ppu->extraLeftRight;
-  } else {
+  } else if (!PpuApplyLayerAnchorBand(ppu, layer, y, &win, ws_bias)) {
+    // Anchor bands work on 2bpp layers too (a BG3 HUD row below the split
+    // band, e.g. a gauge that outgrows the split's left group).
     PpuApplyMarginGap(ppu, layer, &win, ws_bias);
   }
   y += ppu->vScroll[layer];
