@@ -2042,9 +2042,12 @@ static void PpuDrawBackground_2bpp_mosaic(Ppu *ppu, PpuPixelPrioBufs *dstbuf, in
 }
 
 
-// Assumes it's drawn on an empty backdrop
-static void PpuDrawBackground_mode7(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, bool sub, PpuZbufType z) {
-  int layer = 0;
+// BG1 assumes it's drawn on an empty backdrop. BG2 (layer 1) is the EXTBG
+// layer ($2133 bit 6): the same Mode 7 pixels, colour from bits 0-6 and
+// priority from bit 7 (zhi when set, zlo when clear), drawn over what is
+// already there by z like the other backgrounds.
+static void PpuDrawBackground_mode7(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, bool sub,
+                                    int layer, PpuZbufType z, PpuZbufType zlo) {
   if (!IS_SCREEN_ENABLED(ppu, sub, layer))
     return;  // layer is completely hidden
   PpuWindows win;
@@ -2059,7 +2062,7 @@ static void PpuDrawBackground_mode7(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, 
   int clippedV = vScroll - yCenter;
   clippedH = (clippedH & 0x2000) ? (clippedH | ~1023) : (clippedH & 1023);
   clippedV = (clippedV & 0x2000) ? (clippedV | ~1023) : (clippedV & 1023);
-  uint8 mosaic_enabled = PPU_mosaicEnabled(ppu, 0);
+  uint8 mosaic_enabled = PPU_mosaicEnabled(ppu, layer);
   if (mosaic_enabled)
     y = ppu->mosaicModulo[y];
   uint32 ry = PPU_m7yFlip(ppu) ? 255 - y : y;
@@ -2092,7 +2095,13 @@ static void PpuDrawBackground_mode7(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, 
           tile = PpuRenderVram(ppu)[(ypos >> 11 & 0x7f) * 128 + (xpos >> 11 & 0x7f)] & 0xff;
         }
         uint8 pixel = PpuRenderVram(ppu)[tile * 64 + (ypos >> 8 & 7) * 8 + (xpos >> 8 & 7)] >> 8;
-        if (pixel) {
+        if (layer) {
+          PpuZbufType zz = (pixel & 0x80) ? z : zlo;
+          if (pixel & 0x7f) {
+            int i = 0;
+            do if (zz > dstz[i]) dstz[i] = zz + (pixel & 0x7f); while (++i != w);
+          }
+        } else if (pixel) {
           int i = 0;
           do dstz[i] = pixel + z; while (++i != w);
         }
@@ -2107,8 +2116,13 @@ static void PpuDrawBackground_mode7(Ppu *ppu, PpuPixelPrioBufs *dstbuf, uint y, 
           tile = PpuRenderVram(ppu)[(ypos >> 11 & 0x7f) * 128 + (xpos >> 11 & 0x7f)] & 0xff;
         }
         uint8 pixel = PpuRenderVram(ppu)[tile * 64 + (ypos >> 8 & 7) * 8 + (xpos >> 8 & 7)] >> 8;
-        if (pixel)
+        if (layer) {
+          PpuZbufType zz = (pixel & 0x80) ? z : zlo;
+          if ((pixel & 0x7f) && zz > dstz[0])
+            dstz[0] = zz + (pixel & 0x7f);
+        } else if (pixel) {
           dstz[0] = pixel + z;
+        }
       } while (xpos += dx, ypos += dy, ++dstz != dstz_end);
     }
   }
@@ -2351,8 +2365,17 @@ static void PpuDrawBackgrounds(Ppu *ppu, int y, bool sub) {
   } else {
     // mode 7
     PpuPixelPrioBufs *layerbuf = PpuBeginBackgroundOverlay(ppu, y, sub, 0);
-    PpuDrawBackground_mode7(ppu, layerbuf, y, sub, 0x5000);
+    PpuDrawBackground_mode7(ppu, layerbuf, y, sub, 0, 0x5000, 0x5000);
     PpuFinishBackgroundOverlay(ppu, y, sub, 0, layerbuf);
+    /* EXTBG: BG2 shows the Mode 7 layer with a per-pixel priority. Front to
+     * back: OBJ3, OBJ2, BG2.hi, OBJ1, BG1, BG2.lo, OBJ0. Without this BG2 was
+     * never drawn, so a game that puts its floor on BG2 got black (Super
+     * Empire Strikes Back's snowspeeder mission). */
+    if (PPU_m7extBg(ppu)) {
+      layerbuf = PpuBeginBackgroundOverlay(ppu, y, sub, 1);
+      PpuDrawBackground_mode7(ppu, layerbuf, y, sub, 1, 0x8100, 0x4100);
+      PpuFinishBackgroundOverlay(ppu, y, sub, 1, layerbuf);
+    }
     if (ppu->lineHasSprites)
       PpuDrawSprites(ppu, y, sub, false);
   }
