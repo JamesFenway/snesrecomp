@@ -2349,31 +2349,41 @@ static void PpuDrawBackgrounds(Ppu *ppu, int y, bool sub) {
         mosaic_size && PPU_mosaicEnabled(ppu, 2));
     PpuFinishBackgroundOverlay(ppu, y, sub, 2, layerbuf);
   } else if (PPU_mode(ppu) == 2) {
+    /* Modes 2-5 interleave the two backgrounds with the sprites, front to
+     * back OBJ3, BG1.hi, OBJ2, BG2.hi, OBJ1, BG1.lo, OBJ0, BG2.lo (not mode
+     * 1's OBJ3, BG1.hi, BG2.hi, OBJ2, BG1.lo, BG2.lo, OBJ1). With mode 1's
+     * values here, priority 0-2 sprites went behind BG2 (Super Empire Strikes
+     * Back: the snowspeeder and probe droids vanished over its mode-2
+     * mountain band). Sprites are $24/$64/$A4/$E4 (SPRITE_PRIO_TO_PRIO). */
     if (ppu->lineHasSprites)
       PpuDrawSprites(ppu, y, sub, true);
-    PpuDrawBackground_4bpp_opt(ppu, y, sub, 0, 0xc000, 0x8000);
-    PpuDrawBackground_4bpp_opt(ppu, y, sub, 1, 0xb100, 0x7100);
+    PpuDrawBackground_4bpp_opt(ppu, y, sub, 0, 0xc000, 0x4000);
+    PpuDrawBackground_4bpp_opt(ppu, y, sub, 1, 0x8100, 0x1100);
   } else if (PPU_mode(ppu) == 3) {
+    /* Same order as mode 2. */
     if (ppu->lineHasSprites) { PPU_T0; PpuDrawSprites(ppu, y, sub, true); PPU_ACC(g_ppu_sec_spr_ms); }
-    PpuDrawBackground_8bpp(ppu, y, sub, 0, 0xc000, 0x8000);
+    PpuDrawBackground_8bpp(ppu, y, sub, 0, 0xc000, 0x4000);
     if (PPU_bigTiles(ppu, 1))
       PpuDrawBackgroundBig(ppu, &ppu->bgBuffers[sub], y, sub, 1, 4,
-                           0xb100, 0x7100, false);
+                           0x8100, 0x1100, false);
     else
       PpuDrawBackground_4bpp(ppu, &ppu->bgBuffers[sub], y, sub, 1,
-                             0xb100, 0x7100);
+                             0x8100, 0x1100);
   } else {
     // mode 7
     PpuPixelPrioBufs *layerbuf = PpuBeginBackgroundOverlay(ppu, y, sub, 0);
     PpuDrawBackground_mode7(ppu, layerbuf, y, sub, 0, 0x5000, 0x5000);
     PpuFinishBackgroundOverlay(ppu, y, sub, 0, layerbuf);
     /* EXTBG: BG2 shows the Mode 7 layer with a per-pixel priority. Front to
-     * back: OBJ3, OBJ2, BG2.hi, OBJ1, BG1, BG2.lo, OBJ0. Without this BG2 was
-     * never drawn, so a game that puts its floor on BG2 got black (Super
-     * Empire Strikes Back's snowspeeder mission). */
+     * back: OBJ3, OBJ2, BG2.hi, OBJ1, BG1, OBJ0, BG2.lo (as the legacy
+     * renderer and bsnes rank them). Without this BG2 was never drawn, so a
+     * game that puts its floor on BG2 got black (Super Empire Strikes Back's
+     * snowspeeder mission). BG2.lo must sit behind OBJ0 ($24xx/$26xx): at
+     * $4100 it hid that game's priority-0 vehicles whenever the floor was on
+     * BG2, which was most frames. */
     if (PPU_m7extBg(ppu)) {
       layerbuf = PpuBeginBackgroundOverlay(ppu, y, sub, 1);
-      PpuDrawBackground_mode7(ppu, layerbuf, y, sub, 1, 0x8100, 0x4100);
+      PpuDrawBackground_mode7(ppu, layerbuf, y, sub, 1, 0x8100, 0x1100);
       PpuFinishBackgroundOverlay(ppu, y, sub, 1, layerbuf);
     }
     if (ppu->lineHasSprites)
@@ -3028,6 +3038,7 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
   int spritesFound = 0;
   int rangeFound = 0;  /* sprites the 256-wide screen shows */
   int tilesFound = 0;
+  int slivers = 0;  /* slivers drawn, margins included: the line has sprites */
   uint8_t foundSprites[128];
 
   // Range evaluation walks OAM forward, but tile fetching walks the accepted
@@ -3099,6 +3110,7 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
              * 34. */
             if (col + native_x > -8 && col + native_x < 256)
               tilesFound++;
+            slivers++;
             if(tilesFound > 34 &&
                !(ppu->renderFlags & kPpuRenderFlags_NoSpriteLimits)) {
               ppu->timeOver = true;
@@ -3189,7 +3201,10 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
   bool extra=ppu->extraObjectCount && PpuComposeExtraObjects(
       ppu->extraObjects,ppu->extraObjectCount,line,-kPpuExtraLeftRight,
       kPpuBufWidth,first_slot,ppu->objBuffer.data,ppu->objectColors,ppu->objectOrder);
-  return tilesFound != 0 || extra;
+  /* Not tilesFound: since margin slivers stay out of the 34, a line whose
+   * only sprites lie in a margin had tilesFound == 0 and was never composed,
+   * so an object wholly in the margin vanished. */
+  return slivers != 0 || extra;
 }
 
 static uint16_t ppu_getVramRemap(Ppu* ppu) {

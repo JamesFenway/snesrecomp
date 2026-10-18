@@ -67,6 +67,16 @@ echo "=== HD Mode 7 sampling and composition ==="
 
 echo "=== Mode 7 EXTBG (BG2) in the line renderer ==="
 "$CC" -std=c11 -Wall -Wextra -O1     -DSNESRECOMP_REVERSE_DEBUG=0     -I "$ROOT/runner/src" -I "$ROOT/runner/src/snes"     "$ROOT/tests/ppu/ppu_mode7_extbg_test.c"     "$ROOT/runner/src/snes/ppu.c"     "$ROOT/runner/src/snes/ppu_legacy.c"     -lm -o "$OUT/ppu_mode7_extbg_test"
+
+echo "=== PPU mode 2/3 priorities ==="
+"$CC" -std=c11 -Wall -Wextra -O1 \
+    -DSNESRECOMP_REVERSE_DEBUG=0 \
+    -I "$ROOT/runner/src" -I "$ROOT/runner/src/snes" \
+    "$ROOT/tests/ppu/ppu_mode23_priority_test.c" \
+    "$ROOT/runner/src/snes/ppu.c" \
+    "$ROOT/runner/src/snes/ppu_legacy.c" \
+    -lm -o "$OUT/ppu_mode23_priority_test"
+"$OUT/ppu_mode23_priority_test"
 "$OUT/ppu_mode7_extbg_test"
 
 echo "=== PPU raster journal ==="
