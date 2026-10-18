@@ -3026,6 +3026,7 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
   uint8_t index = PPU_objPriority(ppu) ? (ppu->oamaddl & 0xfe) : 0;
   unsigned first_slot=index>>1;
   int spritesFound = 0;
+  int rangeFound = 0;  /* sprites the 256-wide screen shows */
   int tilesFound = 0;
   uint8_t foundSprites[128];
 
@@ -3045,16 +3046,22 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
               : ppu->extraLeftCur;
       if (PpuWidescreenOamLeftHintAllows(ppu, index, x, spriteSize,
                                           left_extra)) {
+        /* Only a sprite the 256-wide screen shows (at its OAM position,
+         * before any HUD shift) counts toward the hardware's 32; one wholly
+         * in a widescreen margin is extra, so widening never drops a sprite
+         * the 4:3 picture keeps. */
+        const bool native = x + spriteSize > 0;
         x = PpuAdjustWidescreenHudOamX(ppu, index, y, x);
         if(x + spriteSize > -left_extra) {
-          spritesFound++;
-          if(spritesFound > 32 &&
-             !(ppu->renderFlags & kPpuRenderFlags_NoSpriteLimits)) {
-            ppu->rangeOver = true;
-            spritesFound = 32;
-            break;
+          if (native) {
+            rangeFound++;
+            if(rangeFound > 32 &&
+               !(ppu->renderFlags & kPpuRenderFlags_NoSpriteLimits)) {
+              ppu->rangeOver = true;
+              break;
+            }
           }
-          foundSprites[spritesFound - 1] = index;
+          foundSprites[spritesFound++] = index;
         }
       }
     }
@@ -3074,6 +3081,7 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
         full_budget_hud ? ppu->extraLeftRight : ppu->extraLeftCur;
     const int right_extra =
         full_budget_hud ? ppu->extraLeftRight : ppu->extraRightCur;
+    const int native_x = x;
     x = PpuAdjustWidescreenHudOamX(ppu, index, sprite_y, x);
         if(PPU_objInterlace(ppu)) row = row * 2 + (ppu->evenFrame ? 0 : 1);
         int oam1 = ppu->oam[index + 1];
@@ -3087,7 +3095,10 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
       if(col + x <= -8 - left_extra ||
          col + x >= 256 + right_extra)
         continue;
-            tilesFound++;
+            /* As above: slivers wholly in a margin are not in the hardware's
+             * 34. */
+            if (col + native_x > -8 && col + native_x < 256)
+              tilesFound++;
             if(tilesFound > 34 &&
                !(ppu->renderFlags & kPpuRenderFlags_NoSpriteLimits)) {
               ppu->timeOver = true;
