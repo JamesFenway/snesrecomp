@@ -3558,6 +3558,19 @@ void ppu_rasterRenderEnd(Ppu *ppu) {
   int i;
   if (!s_raster_armed || !s_raster_rendering) return;
   s_raster_rendering = 0;
+  /* The completed field's writes the render walk did not reach: a host that
+   * draws lines 1..224 applies entries through line 223, so a write made on
+   * line 224 (after the last line is drawn on hardware too) was never put
+   * back, and RenderBegin had already reset the register to the field's
+   * start. Super Star Wars sets BG3's map and tile base ($2109/$210C) there
+   * on a stage change with the CPU overclocked; they reverted for good. */
+  if (s_raster_render) {
+    const PpuRasterField *done = s_raster_render;
+    for (i = s_raster_next; i < done->count; i++)
+      if (done->e[i].reg != 0x420C)
+        raster_replay(ppu, done->e[i].reg, done->e[i].val);
+    s_raster_next = done->count;
+  }
   if (s_raster_have_completed) {
     f = &s_field[s_raster_cur];
     for (i = 0; i < f->count; i++)
