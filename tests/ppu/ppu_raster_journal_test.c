@@ -98,6 +98,22 @@ int main(void) {
   CHECK(p.window1left == 0x20);
   ppu_rasterRenderEnd(&p);
 
+  /* A write on line 224, the last visible line, is drawn by no line, but the
+   * guest wrote it: a host that applies lines 0..223 only (the beam frame
+   * driver draws 1..224 and applies the line before) must still find it
+   * after the render. */
+  write_at(100, 0x09, 0x08);         /* BG3SC */
+  write_at(100, 0x0C, 0x44);         /* BG34NBA */
+  write_at(224, 0x09, 0x44);
+  write_at(224, 0x0C, 0x00);
+  s_snes.vPos = 225;
+  ppu_rasterFieldBoundary();
+  ppu_rasterRenderBegin(&p);
+  ppu_rasterApplyLine(&p, 223);
+  CHECK(p.bgXsc[2] == 0x08 && (p.bgTileAdr >> 8) == 0x44);  /* not drawn */
+  ppu_rasterRenderEnd(&p);
+  CHECK(p.bgXsc[2] == 0x44 && (p.bgTileAdr >> 8) == 0x00);
+
   /* A machine reset disarms. */
   ppu_rasterReset();
   write_at(50, 0x26, 0x77);
