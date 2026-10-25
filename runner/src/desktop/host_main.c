@@ -1511,9 +1511,11 @@ static uint32 OverlayNavInputs(void) {
  * without another word, so leaving the foreground is treated like quitting:
  * the main loop saves what quitting saves (HostSaveForSuspend), then idles
  * with audio paused until the app is in front again. Handled here rather than
- * in one loop so a modal overlay's pump sees them too. */
+ * in one loop so a modal overlay's pump sees them too. On iOS the save itself
+ * happens earlier, in LifecycleSaveWatch, while the event is delivered. */
 static bool g_app_backgrounded;
 static bool g_app_suspend_save_pending;
+static void HostSaveForSuspend(void);
 
 static bool HandleDeviceEvent(const SDL_Event *event) {
   GamepadInfo *gi;
@@ -2561,6 +2563,30 @@ static void HostSaveForSuspend(void) {
   if (!g_netplay_session) RtlWriteSram();
   host_report_breadcrumb("app left the foreground: autosave/SRAM/config written");
 }
+
+#if SNESRECOMP_HOST_IOS
+/* iOS may give an app no time at all after it has been told it is leaving
+ * the foreground, so SDL's iOS notes ask for the lifecycle events to be
+ * handled in an event watch: it runs while the event is delivered, before
+ * SDL_PollEvent returns. UIKit delivers them on the main thread from inside
+ * an event pump, which is where the main loop and the overlays' modal loops
+ * are between frames, so saving here is saving where a key press would. The
+ * deferred save in the main loop then finds nothing pending. (Android posts
+ * these events from its Java thread, so it keeps the deferred save.) Armed
+ * only while the main loop runs. */
+static bool SDLCALL LifecycleSaveWatch(void *userdata, SDL_Event *event) {
+  (void)userdata;
+  if (event->type != SDL_EVENT_WILL_ENTER_BACKGROUND &&
+      event->type != SDL_EVENT_TERMINATING)
+    return true;
+  if (!g_app_backgrounded || g_app_suspend_save_pending) {
+    g_app_backgrounded = true;
+    g_app_suspend_save_pending = false;
+    HostSaveForSuspend();
+  }
+  return true;
+}
+#endif
 
 /* The dump this project was generated from, if the player parked a copy next
  * to the executable or in the working directory. Not a requirement — it is
@@ -3827,6 +3853,9 @@ error_reading:;
   g_state_generation = RtlStateGeneration();
 
   snes_savestate_menu_set_compose(ComposeStateThumbnail);
+#if SNESRECOMP_HOST_IOS
+  SDL_AddEventWatch(LifecycleSaveWatch, NULL);
+#endif
   host_report_breadcrumb("entering main loop");
 
   while (running) {
@@ -4354,6 +4383,9 @@ error_reading:;
     free(g_frame_timings);
     g_frame_timings = NULL;
   }
+#if SNESRECOMP_HOST_IOS
+  SDL_RemoveEventWatch(LifecycleSaveWatch, NULL);
+#endif
   host_report_breadcrumb("exit: %s after %u frames", exit_reason, frameCtr);
   host_report_breadcrumb("video totals: simulations=%u presentations=%llu seconds=%.3f",
                          frameCtr, (unsigned long long)presentations,
