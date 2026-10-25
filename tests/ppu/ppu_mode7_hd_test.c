@@ -85,12 +85,13 @@ static void test_detail_and_isolation(void) {
   CHECK(hd[1] == 0x12345678 && !memcmp(before, native, sizeof(before)));
 }
 static void test_fallbacks_and_capacity(void) {
+  /* EXTBG ($2133 bit 6) is no fallback: it renders HD, see composition. */
   for (unsigned kind = 0; kind < 9; ++kind) {
+    if (kind == 4) continue;
     setup(); bind(256, kind == 0 ? 1 : 3);
     if (kind == 1) p.bgmode = 1;
     if (kind == 2) p.inidisp |= 128;
     if (kind == 3) { p.mosaic = 0x11; ppu_runLine(&p, 0); }
-    if (kind == 4) p.setini = 0x40;
     if (kind == 5) p.cgwsel = 1;
     if (kind == 6) p.setini = 1;
     if (kind == 7) p.setini = 8;
@@ -140,13 +141,24 @@ static void test_transparency_and_sprites(void) {
 static void test_composition_and_raster_state(void) {
   /* At integer sample locations, this integral matrix matches the hardware.
    * Exercise main/sub selection, all colour windows, math modes, priorities,
-   * flips and overflow with the existing compositor as an independent oracle. */
-  for (unsigned seed = 0; seed < 512; ++seed) {
+   * flips and overflow with the existing compositor as an independent oracle.
+   * The second half repeats them with EXTBG: BG2 shows the same pixels with
+   * bit 7 as its priority, ranked against the sprite and BG1. */
+  for (unsigned seed = 0; seed < 1024; ++seed) {
     setup(); PpuSetExtraSpace(&p, 16); bind(288, 2);
+    if (seed & 512) {
+      p.setini = 0x40;
+      for (unsigned i = 0; i < 64; i += 3) p.vram[64 + i] |= 0x8000;
+    }
     p.inidisp = (uint8_t)(1 + seed % 15);
     sprite((seed >> 4) & 3);
     p.screenEnabled[0] = (seed & 1) ? 17 : 1;
     p.screenEnabled[1] = (seed & 2) ? 17 : 1;
+    if (seed & 512) {
+      if (seed & 2) p.screenEnabled[0] |= 2;
+      if (seed & 4) p.screenEnabled[1] |= 2;
+      if (seed & 8) p.screenEnabled[0] &= ~1;
+    }
     p.cgwsel = (uint8_t)((seed & 3) << 6 | ((seed >> 2) & 3) << 4 | (seed & 4 ? 2 : 0));
     p.cgadsub = (uint8_t)(0x31 | (seed & 8 ? 64 : 0) | (seed & 16 ? 128 : 0));
     p.fixedColor = 0x4a3b;
@@ -263,6 +275,6 @@ int main(void) {
   test_sampler();
   test_bounded_sampler();
   test_fractional_scanout();
-  puts("HD Mode 7: detail, isolation, bounds, fallbacks, sprites, raster state, fractional scanout and 512 composition cases passed");
+  puts("HD Mode 7: detail, isolation, bounds, fallbacks, sprites, raster state, fractional scanout and 1024 composition cases (half EXTBG) passed");
   return 0;
 }
