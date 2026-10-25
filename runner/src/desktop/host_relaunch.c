@@ -6,6 +6,7 @@
 #include "host_relaunch.h"
 
 #include "host_paths.h"
+#include "host_platform.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -13,7 +14,7 @@
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
-#elif !defined(__ANDROID__)
+#elif !SNESRECOMP_HOST_NO_SPAWN
 #  include <spawn.h>
 extern char **environ;
 #endif
@@ -49,9 +50,10 @@ static int AppendQuoted(char *out, size_t cap, size_t *len, const char *arg) {
 #endif
 
 int snesrecomp_host_relaunch(int argc, const char *const *args) {
-#if defined(__ANDROID__)
-  /* An app is started by the system, not by itself (and posix_spawn needs
-   * API 28). The in-game launcher's restart is desktop-only. */
+#if SNESRECOMP_HOST_NO_SPAWN
+  /* An app is started by the system, not by itself (Android's posix_spawn
+   * needs API 28; the iOS sandbox refuses it). The in-game launcher's restart
+   * is desktop-only. */
   (void)argc; (void)args;
   return 0;
 #else

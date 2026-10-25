@@ -5,8 +5,9 @@
  *
  * Two backends:
  *  - ucontext (macOS/glibc): true stack switching, zero threads.
- *  - pthread (Android): bionic ships the ucontext types but NOT
- *    getcontext/makecontext/swapcontext, so each fiber is a parked thread
+ *  - pthread (Android, iOS): bionic ships the ucontext types but NOT
+ *    getcontext/makecontext/swapcontext, and the iOS SDK marks them
+ *    unavailable, so each fiber is a parked thread
  *    and SwitchToFiber is a condvar handoff. A frame-model host switches
  *    fibers a couple of times per frame, so the handoff cost does not
  *    matter; a scheduler that switches per guest task should measure it.
@@ -17,7 +18,8 @@
  * cannot inherit a fix (recomp-ai-rules/PRINCIPLES.md).
  */
 #ifndef _WIN32
-#ifdef __ANDROID__
+#include "host_platform.h"
+#if defined(__ANDROID__) || SNESRECOMP_HOST_IOS
 
 #include "fiber_compat.h"
 #include <pthread.h>
@@ -127,7 +129,7 @@ int    FiberSnapshotLoad(void *fiber, const void *in, size_t size) {
     (void)fiber; (void)in; (void)size; return 0;
 }
 
-#else /* !__ANDROID__: ucontext backend */
+#else /* desktop POSIX: ucontext backend */
 
 #define _XOPEN_SOURCE 600   /* expose ucontext on macOS/glibc — must precede includes */
 
@@ -294,7 +296,7 @@ void DeleteFiber(void *fiber) {
 
 unsigned long GetLastError(void) { return 0; }
 
-#endif /* __ANDROID__ */
+#endif /* __ANDROID__ || SNESRECOMP_HOST_IOS */
 #else  /* _WIN32 */
 
 /* A Win32 fiber is an opaque kernel object: its stack extent and saved

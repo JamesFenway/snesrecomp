@@ -65,6 +65,7 @@
 #include "launcher.h"
 #include "launcher_cache.h"
 #include "host_paths.h"
+#include "host_platform.h"
 #include "host_args.h"
 #include "host_relaunch.h"
 #include "keybinds.h"
@@ -164,7 +165,7 @@ static void HandleInput(int keyCode, int keyMod, bool pressed);
 static void HandleCommand(uint32 j, bool pressed);
 static void PollKeyboardControls(const uint8_t *keys);
 static void RequestScreenshot(void);
-#ifndef __ANDROID__
+#if !SNESRECOMP_HOST_NO_DESKTOP_GL
 void OpenGLRenderer_Create(struct RendererFuncs *funcs);
 #include "opengl.h"   /* snesrecomp_opengl_set_vsync */
 #endif
@@ -505,7 +506,7 @@ static void RendererEnumerate(void) {
   snprintf(g_renderer_id[0], kRendererNameMax, "auto");
   snprintf(g_renderer_label[0], kRendererNameMax, "Auto");
   g_renderer_count = 1;
-#ifndef __ANDROID__
+#if !SNESRECOMP_HOST_NO_DESKTOP_GL
   snprintf(g_renderer_id[1], kRendererNameMax, "opengl");
   snprintf(g_renderer_label[1], kRendererNameMax, "OpenGL");
   g_renderer_count = 2;
@@ -1505,9 +1506,31 @@ static uint32 OverlayNavInputs(void) {
  * keyboard player never saw it, and the headless self-test injects pad words
  * below the event layer, so it never saw it either. Returns true when the
  * event was one of ours. */
+/* App lifecycle (iOS, Android; desktop SDL never sends these events). A
+ * phone suspends an app it sends to the background and may end it later
+ * without another word, so leaving the foreground is treated like quitting:
+ * the main loop saves what quitting saves (HostSaveForSuspend), then idles
+ * with audio paused until the app is in front again. Handled here rather than
+ * in one loop so a modal overlay's pump sees them too. On iOS the save itself
+ * happens earlier, in LifecycleSaveWatch, while the event is delivered. */
+static bool g_app_backgrounded;
+static bool g_app_suspend_save_pending;
+static void HostSaveForSuspend(void);
+
 static bool HandleDeviceEvent(const SDL_Event *event) {
   GamepadInfo *gi;
   switch (event->type) {
+#if defined(SNESRECOMP_SDL3)
+  case SDL_EVENT_WILL_ENTER_BACKGROUND:
+  case SDL_EVENT_TERMINATING:
+    if (!g_app_backgrounded) g_app_suspend_save_pending = true;
+    g_app_backgrounded = true;
+    return true;
+  case SDL_EVENT_DID_ENTER_FOREGROUND:
+    g_app_backgrounded = false;
+    g_reset_clock = true;
+    return true;
+#endif
   case SDL_CONTROLLERDEVICEADDED:
     OpenOneGamepad(event->cdevice.which);
     return true;
@@ -2530,6 +2553,41 @@ static void netplay_poll_events(void *ctx, int *want_soft_exit) {
 }
 #endif /* SNES_HAS_LOBBY_CLIENT */
 
+/* What the main loop's exit saves, for an app leaving the foreground: the
+ * system may end it there without another event. */
+static void HostSaveForSuspend(void) {
+  if (g_config.autosave && !g_netplay_session)
+    HandleCommand(kKeys_Save + 0, true);
+  if (g_volume_changed || g_fullscreen_changed)
+    WriteConfigFile(g_active_config_file);
+  if (!g_netplay_session) RtlWriteSram();
+  host_report_breadcrumb("app left the foreground: autosave/SRAM/config written");
+}
+
+#if SNESRECOMP_HOST_IOS
+/* iOS may give an app no time at all after it has been told it is leaving
+ * the foreground, so SDL's iOS notes ask for the lifecycle events to be
+ * handled in an event watch: it runs while the event is delivered, before
+ * SDL_PollEvent returns. UIKit delivers them on the main thread from inside
+ * an event pump, which is where the main loop and the overlays' modal loops
+ * are between frames, so saving here is saving where a key press would. The
+ * deferred save in the main loop then finds nothing pending. (Android posts
+ * these events from its Java thread, so it keeps the deferred save.) Armed
+ * only while the main loop runs. */
+static bool SDLCALL LifecycleSaveWatch(void *userdata, SDL_Event *event) {
+  (void)userdata;
+  if (event->type != SDL_EVENT_WILL_ENTER_BACKGROUND &&
+      event->type != SDL_EVENT_TERMINATING)
+    return true;
+  if (!g_app_backgrounded || g_app_suspend_save_pending) {
+    g_app_backgrounded = true;
+    g_app_suspend_save_pending = false;
+    HostSaveForSuspend();
+  }
+  return true;
+}
+#endif
+
 /* The dump this project was generated from, if the player parked a copy next
  * to the executable or in the working directory. Not a requirement — it is
  * the habit tools/regen.sh documents, and skipping the prompt for someone
@@ -2846,7 +2904,7 @@ static void ApplyLiveSettings(const Config *before) {
       g_current_window_scale = IntMin(g_config.window_scale, kMaxWindowScale);
     ChangeWindowScale(0);
   }
-#ifndef __ANDROID__
+#if !SNESRECOMP_HOST_NO_DESKTOP_GL
   snesrecomp_opengl_set_vsync(VSyncInterval());
 #endif
   if (g_renderer_funcs.Reconfigure) g_renderer_funcs.Reconfigure();
@@ -3024,11 +3082,31 @@ static void RunInGameLauncher(bool *running, const char **exit_reason) {
 #endif
 }
 
+#if SNESRECOMP_HOST_IOS && defined(SNESRECOMP_SDL3)
+/* UIKit owns an iOS app's main thread: SDL_RunApp starts UIApplicationMain
+ * and calls back into the host from inside it. The ports define
+ * SDL_MAIN_HANDLED and call snesrecomp_desktop_main from their own main(), so
+ * the first call hands itself to SDL_RunApp and the callback is the real run. */
+static const SnesDesktopHostGame *s_ios_game;
+static int s_ios_in_app;
+
+static int IosAppMain(int argc, char **argv) {
+  s_ios_in_app = 1;
+  return snesrecomp_desktop_main(s_ios_game, argc, argv);
+}
+#endif
+
 int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **argv) {
   if (!game || !game->game_info || !game->display_name) {
     fprintf(stderr, "snesrecomp_desktop_main: descriptor needs display_name and game_info\n");
     return 2;
   }
+#if SNESRECOMP_HOST_IOS && defined(SNESRECOMP_SDL3)
+  if (!s_ios_in_app) {
+    s_ios_game = game;
+    return SDL_RunApp(argc, argv, IosAppMain, NULL);
+  }
+#endif
   g_game = game;
   if (game->window_title && game->window_title[0])
     snprintf(g_window_title, sizeof(g_window_title), "%s", game->window_title);
@@ -3041,7 +3119,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
   g_simulation_hz = game->simulation_hz > 0 ? game->simulation_hz : SNES_HOST_NTSC_HZ;
   g_snes_width = game->frame_width > 0 ? game->frame_width : 256;
   g_snes_height = game->frame_height > 0 ? game->frame_height : 224;
-#ifndef __ANDROID__
+#if !SNESRECOMP_HOST_NO_DESKTOP_GL
   snesrecomp_opengl_set_viewport(game->compute_viewport);
 #endif
   const char *build_version = game->build_version ? game->build_version : "dev";
@@ -3490,7 +3568,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
       g_current_window_scale * WindowBaseHeight();
 
   RendererApply(RendererChoice());
-#ifndef __ANDROID__
+#if !SNESRECOMP_HOST_NO_DESKTOP_GL
   if (g_config.output_method == kOutputMethod_OpenGL) {
     g_win_flags |= SDL_WINDOW_OPENGL;
     snesrecomp_opengl_set_vsync(VSyncInterval());
@@ -3775,6 +3853,9 @@ error_reading:;
   g_state_generation = RtlStateGeneration();
 
   snes_savestate_menu_set_compose(ComposeStateThumbnail);
+#if SNESRECOMP_HOST_IOS
+  SDL_AddEventWatch(LifecycleSaveWatch, NULL);
+#endif
   host_report_breadcrumb("entering main loop");
 
   while (running) {
@@ -3840,6 +3921,18 @@ error_reading:;
     }
     if (!running)
       break;
+    if (g_app_backgrounded) {
+      if (g_app_suspend_save_pending) {
+        g_app_suspend_save_pending = false;
+        HostSaveForSuspend();
+      }
+      if (!audiopaused) {
+        audiopaused = true;
+        SetAudioPaused(true);
+      }
+      SDL_Delay(50);
+      continue;
+    }
     OverlaySelftestPadMainTick(frameCtr);
     /* SNESRECOMP_VOLUME_DEMO=<frame>: press VolumeDown once at that frame, so
      * a headless screenshot can show the bar. */
@@ -4290,6 +4383,9 @@ error_reading:;
     free(g_frame_timings);
     g_frame_timings = NULL;
   }
+#if SNESRECOMP_HOST_IOS
+  SDL_RemoveEventWatch(LifecycleSaveWatch, NULL);
+#endif
   host_report_breadcrumb("exit: %s after %u frames", exit_reason, frameCtr);
   host_report_breadcrumb("video totals: simulations=%u presentations=%llu seconds=%.3f",
                          frameCtr, (unsigned long long)presentations,
@@ -4512,7 +4608,7 @@ static void RequestScreenshot(void) {
     return;
   s_last_screenshot_time = now;
 
-#ifdef __ANDROID__
+#if SNESRECOMP_HOST_NO_DESKTOP_GL
   fprintf(stderr, "Screenshots require the desktop OpenGL backend.\n");
 #else
   if (g_config.output_method != kOutputMethod_OpenGL) {

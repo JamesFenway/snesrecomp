@@ -5,6 +5,7 @@
  * paths all need this policy even when a game supplies its own ROM launcher.
  */
 #include "host_paths.h"
+#include "host_platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +25,11 @@
 #endif
 #ifdef __APPLE__
 #  include <mach-o/dyld.h>
+#endif
+#if SNESRECOMP_HOST_IOS
+#  include <dirent.h>
+#  include <errno.h>
+#  include <sys/stat.h>
 #endif
 
 /* Full path of the running executable. Returns 1 on success. Platforms
@@ -58,9 +64,25 @@ static int get_exe_path(char *out, size_t max_len) {
 #endif
 }
 
+#if SNESRECOMP_HOST_IOS
+/* iOS: the app bundle that holds the executable is read-only and replaced on
+ * every install, so "beside the executable" -- config.ini, rom.cfg, saves/,
+ * mods/ -- is the app's Documents folder instead (HOME is the app's data
+ * container; Documents is what the Files app shows when the bundle sets
+ * UIFileSharingEnabled). Returns 0 when HOME is unset. */
+static int get_ios_documents_dir(char *out, size_t max_len) {
+    const char *home = getenv("HOME");
+    if (!home || !home[0]) return 0;
+    return snprintf(out, max_len, "%s/Documents/", home) < (int)max_len;
+}
+#endif
+
 /* Directory containing the executable, with trailing separator.
  * Falls back to "./" when the executable path cannot be determined. */
 static void get_exe_dir(char *out, size_t max_len) {
+#if SNESRECOMP_HOST_IOS
+    if (get_ios_documents_dir(out, max_len)) return;
+#endif
     char exe_path[1024];
     if (get_exe_path(exe_path, sizeof(exe_path))) {
         char *last_sep = NULL;
@@ -155,9 +177,109 @@ static int dir_is_writable(const char *dir) {
     return 1;
 }
 
+#if SNESRECOMP_HOST_IOS
+/* Files the player (or the game, on their behalf) owns once they exist: a
+ * new install must not put the build's copy back over them. Everything else
+ * in the payload is the build's and is refreshed on every start. */
+static int payload_file_is_players(const char *name) {
+    static const char *const kOwned[] = {
+        "config.ini", "keybinds.ini", "rom.cfg", "state.toml",
+    };
+    for (size_t i = 0; i < sizeof(kOwned) / sizeof(kOwned[0]); i++)
+        if (strcmp(name, kOwned[i]) == 0) return 1;
+    return 0;
+}
+
+static int copy_file(const char *src, const char *dst) {
+    FILE *in = fopen(src, "rb");
+    if (!in) return 0;
+    char tmp[1100];
+    if (snprintf(tmp, sizeof(tmp), "%s.part", dst) >= (int)sizeof(tmp)) {
+        fclose(in);
+        return 0;
+    }
+    FILE *out = fopen(tmp, "wb");
+    if (!out) {
+        fclose(in);
+        return 0;
+    }
+    char buf[65536];
+    size_t n;
+    int ok = 1;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+        if (fwrite(buf, 1, n, out) != n) { ok = 0; break; }
+    if (ferror(in)) ok = 0;
+    fclose(in);
+    if (fclose(out) != 0) ok = 0;
+    if (!ok || rename(tmp, dst) != 0) {
+        remove(tmp);
+        return 0;
+    }
+    return 1;
+}
+
+/* Mirror `src` (a directory in the bundle) into `dst`, recursively. */
+static void sync_payload_dir(const char *src, const char *dst, int *copied, int *failed) {
+    DIR *d = opendir(src);
+    if (!d) return;
+    if (mkdir(dst, 0755) != 0 && errno != EEXIST) {
+        (*failed)++;
+        closedir(d);
+        return;
+    }
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        char from[1024], to[1024];
+        if (snprintf(from, sizeof(from), "%s/%s", src, e->d_name) >= (int)sizeof(from) ||
+            snprintf(to, sizeof(to), "%s/%s", dst, e->d_name) >= (int)sizeof(to)) {
+            (*failed)++;
+            continue;
+        }
+        struct stat st;
+        if (stat(from, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            sync_payload_dir(from, to, copied, failed);
+            continue;
+        }
+        struct stat have;
+        if (payload_file_is_players(e->d_name) && stat(to, &have) == 0) continue;
+        if (copy_file(from, to)) (*copied)++;
+        else (*failed)++;
+    }
+    closedir(d);
+}
+
+/* The build stages what desktop ports find beside the executable (the mod
+ * catalog, config.ini's seed, the ROM for a personal build...) into the
+ * bundle's payload/ folder; copy it into Documents before anything reads it. */
+static void sync_ios_payload(const char *documents) {
+    char exe[1024];
+    if (!get_exe_path(exe, sizeof(exe))) return;
+    char *sep = strrchr(exe, '/');
+    if (!sep) return;
+    *sep = '\0';
+    char payload[1100];
+    if (snprintf(payload, sizeof(payload), "%s/payload", exe) >= (int)sizeof(payload)) return;
+    struct stat st;
+    if (stat(payload, &st) != 0 || !S_ISDIR(st.st_mode)) return;
+    char dst[1024];
+    snprintf(dst, sizeof(dst), "%s", documents);
+    size_t len = strlen(dst);
+    if (len > 1 && dst[len - 1] == '/') dst[len - 1] = '\0';
+    int copied = 0, failed = 0;
+    sync_payload_dir(payload, dst, &copied, &failed);
+    fprintf(stderr, "[Launcher] App payload -> Documents: %d file(s) copied, %d failed.\n",
+            copied, failed);
+}
+#endif
+
 int snesrecomp_anchor_to_exe_dir(void) {
     char dir[1024];
     get_exe_dir(dir, sizeof(dir));
+#if SNESRECOMP_HOST_IOS
+    sync_ios_payload(dir);
+#endif
     if (dir[0] == '.' &&
         (dir[1] == '/' || dir[1] == '\\' || dir[1] == '\0'))
         return 0;
