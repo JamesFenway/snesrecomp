@@ -186,6 +186,20 @@ typedef struct SnesDesktopHostGame {
    * restarts the game through a temporary save state, so the player resumes
    * exactly where they left off. Zero keeps today's behaviour exactly. */
   int in_game_launcher;
+  /* Opt in to the in-game pause menu (snes_pause_menu.h): Select+Start on
+   * the pad, or [KeyMap] PauseMenu (default Escape), freezes the guest under
+   * RESUME / SAVE / LOAD / OPTIONS / BACK TO MENU / BACK TO LAUNCHER.
+   * OPTIONS is listed only with in_game_launcher. BACK TO LAUNCHER reads
+   * QUIT GAME unless SNESRECOMP_RETURN_TO is set (a front end started the
+   * game); either way it is a normal quit. While on, Select and Start reach
+   * the guest SNES_PAUSE_CHORD_FRAMES late, so the chord never leaks into
+   * the game. Zero keeps today's behaviour exactly. */
+  int pause_menu;
+  /* BACK TO MENU resets the console and then runs the boot uncapped and
+   * silent until this returns nonzero: the title's own title menu is up.
+   * NULL = a plain reset at normal speed. Called after each frame while
+   * skipping; it must only read guest state. */
+  int (*title_menu_ready)(void);
 
   /* Optional title policy after the shared launcher has been seeded. */
   void (*configure_launcher)(struct RecompLauncherCGameInfo *info);

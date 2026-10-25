@@ -71,6 +71,16 @@ void snes_savestate_menu_handle_key(int key, int repeat);
 
 void snes_savestate_menu_close(void);
 
+/* Open directly, for the pause menu's SAVE and LOAD (snes_pause_menu.h).
+ * SNES_SSM_MODE_SAVE: A saves (a used slot asks for a second A first);
+ * SNES_SSM_MODE_LOAD: A loads, X does nothing. `held` is the pad word at
+ * the moment, so the press that chose the item is not taken as A here. The
+ * mode lasts until the menu closes; Select+R always opens it in both modes. */
+enum { SNES_SSM_MODE_BOTH = 0, SNES_SSM_MODE_SAVE = 1, SNES_SSM_MODE_LOAD = 2 };
+void snes_savestate_menu_open_mode(int mode, uint32_t held);
+/* 1 if a load succeeded since the last call (and clears it). */
+int  snes_savestate_menu_take_loaded(void);
+
 /* Hand over the frame the player is looking at, in the PPU's native XRGB
  * layout, so a save taken from this point carries a thumbnail of it. Cheap
  * (one downsample to 128x112); ignored while the menu is open, so the

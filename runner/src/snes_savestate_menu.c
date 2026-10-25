@@ -79,6 +79,9 @@
 
 
 static int s_open;
+static int s_mode;          /* SNES_SSM_MODE_*, for this opening only */
+static int s_loaded;        /* a load succeeded; see take_loaded */
+static int s_overwrite_armed = -1;  /* save mode: slot whose A asked "again?" */
 /* Netplay guest: a read-only mirror of the host's menu. */
 static int s_mirror;
 static int s_selected;
@@ -282,8 +285,12 @@ static void rasterize_panel(void)
         s_panel[i] = 0xFF0F1118u;
 
     fill_rect(s_panel, 0, 0, SSM_W, 40, 0xFF171B25u);
-    draw_text(s_panel, 20, 12, "SAVE STATES", 0xFFFFD24Du, 2);
-    draw_text(s_panel, 384, 16, "SELECT+R MENU", 0xFFB8BDC8u, 1);
+    draw_text(s_panel, 20, 12,
+              s_mode == SNES_SSM_MODE_SAVE ? "SAVE GAME"
+              : s_mode == SNES_SSM_MODE_LOAD ? "LOAD GAME" : "SAVE STATES",
+              0xFFFFD24Du, 2);
+    if (s_mode == SNES_SSM_MODE_BOTH)
+        draw_text(s_panel, 384, 16, "SELECT+R MENU", 0xFFB8BDC8u, 1);
 
     if (!s_thumbs_scanned)
         refresh_thumbs();
@@ -339,18 +346,29 @@ static void rasterize_panel(void)
     }
 
     fill_rect(s_panel, 0, 388, SSM_W, SSM_H - 388, 0xFF171B25u);
-    draw_snes_button(s_panel, 20, 398, 'A', 0xFF6BE06Bu);
-    draw_text(s_panel, 44, 402, "LOAD", 0xFFE2E5EBu, 1);
-    draw_snes_button(s_panel, 116, 398, 'X', 0xFF5FA8FFu);
-    draw_text(s_panel, 140, 402, "SAVE", 0xFFE2E5EBu, 1);
-    draw_snes_button(s_panel, 212, 398, 'B', 0xFFFF6B6Bu);
-    draw_text(s_panel, 236, 402, "BACK", 0xFFE2E5EBu, 1);
-    draw_text(s_panel, 316, 402, "UP DOWN SLOT", 0xFF7F8796u, 1);
-    if (s_mirror)
-        draw_text(s_panel, 20, 422, "NETPLAY: THE HOST CONTROLS THIS MENU", 0xFFB8BDC8u, 1);
-    else
-        draw_text(s_panel, 20, 422, "KEYS: ARROWS SLOT  X LOAD  S SAVE  ESC BACK  Q QUICK",
+    if (s_mode != SNES_SSM_MODE_BOTH) {
+        draw_snes_button(s_panel, 20, 398, 'A', 0xFF6BE06Bu);
+        draw_text(s_panel, 44, 402, s_mode == SNES_SSM_MODE_SAVE ? "SAVE" : "LOAD",
+                  0xFFE2E5EBu, 1);
+        draw_snes_button(s_panel, 116, 398, 'B', 0xFFFF6B6Bu);
+        draw_text(s_panel, 140, 402, "BACK", 0xFFE2E5EBu, 1);
+        draw_text(s_panel, 316, 402, "UP DOWN SLOT", 0xFF7F8796u, 1);
+        draw_text(s_panel, 20, 422, "KEYS: ARROWS SLOT  X CHOOSE  ESC BACK  Q QUICK",
                   0xFFB8BDC8u, 1);
+    } else {
+        draw_snes_button(s_panel, 20, 398, 'A', 0xFF6BE06Bu);
+        draw_text(s_panel, 44, 402, "LOAD", 0xFFE2E5EBu, 1);
+        draw_snes_button(s_panel, 116, 398, 'X', 0xFF5FA8FFu);
+        draw_text(s_panel, 140, 402, "SAVE", 0xFFE2E5EBu, 1);
+        draw_snes_button(s_panel, 212, 398, 'B', 0xFFFF6B6Bu);
+        draw_text(s_panel, 236, 402, "BACK", 0xFFE2E5EBu, 1);
+        draw_text(s_panel, 316, 402, "UP DOWN SLOT", 0xFF7F8796u, 1);
+        if (s_mirror)
+            draw_text(s_panel, 20, 422, "NETPLAY: THE HOST CONTROLS THIS MENU", 0xFFB8BDC8u, 1);
+        else
+            draw_text(s_panel, 20, 422, "KEYS: ARROWS SLOT  X LOAD  S SAVE  ESC BACK  Q QUICK",
+                      0xFFB8BDC8u, 1);
+    }
     if (s_status[0])
         draw_text(s_panel, 20, 436, s_status, 0xFFFFD24Du, 1);
 
@@ -378,6 +396,7 @@ static void set_local_status(const char *fmt, const char *quick)
 static void menu_move(int delta)
 {
     s_selected += delta;
+    s_overwrite_armed = -1;
     while (s_selected < 0)
         s_selected += slot_count();
     while (s_selected >= slot_count())
@@ -434,6 +453,15 @@ static void menu_submit(int save)
     RtlEnsureSaveDir();
     slot_path(s_selected, path, sizeof(path));
     if (save) {
+        /* Opened from the pause menu, saving over a used slot takes a
+         * second A, since there it is the main button rather than X. */
+        if (s_mode == SNES_SSM_MODE_SAVE && slot_exists(s_selected) &&
+            s_overwrite_armed != s_selected) {
+            s_overwrite_armed = s_selected;
+            set_local_status("A AGAIN TO SAVE OVER SLOT %02d", "A AGAIN TO SAVE OVER QUICK");
+            return;
+        }
+        s_overwrite_armed = -1;
         if (!write_slot(s_selected)) {
             set_local_status("SAVE FAILED: SLOT %02d", "QUICK SAVE FAILED");
             return;
@@ -465,6 +493,7 @@ static void menu_submit(int save)
      * the load path needs it more than the save path does. */
     if (s_selected == SNES_SAVESTATE_QUICK_SLOT) snes_osd_push("Quick state loaded", 0);
     else snes_osd_push_slot_loaded(s_selected);
+    s_loaded = 1;
     snes_savestate_menu_close();
 }
 
@@ -481,6 +510,8 @@ int snes_savestate_menu_selected(void)
 static void close_local(void)
 {
     s_open = 0;
+    s_mode = SNES_SSM_MODE_BOTH;
+    s_overwrite_armed = -1;
     s_mirror = 0;
     s_repeat_dir = 0;
     s_input_guard = s_prev_inputs;
@@ -607,10 +638,10 @@ void snes_savestate_menu_poll_nav(uint32_t inputs, uint32_t ticks_ms)
         return;
     }
     if (pressed & SSM_BTN_A) {
-        menu_submit(0);
+        menu_submit(s_mode == SNES_SSM_MODE_SAVE);
         return;
     }
-    if (pressed & SSM_BTN_X) {
+    if ((pressed & SSM_BTN_X) && s_mode != SNES_SSM_MODE_LOAD) {
         menu_submit(1);
         return;
     }
@@ -669,9 +700,33 @@ void snes_savestate_menu_handle_key(int key, int repeat)
     if (slot < 0 || slot >= slot_count())
         return;
     s_selected = slot;
+    s_overwrite_armed = -1;
     s_status[0] = '\0';
     s_dirty = 1;
     snes_netplay_menu_cursor(s_selected);
+}
+
+void snes_savestate_menu_open_mode(int mode, uint32_t held)
+{
+    if (s_open || snes_netplay_active())
+        return;
+    s_open = 1;
+    s_mirror = 0;
+    s_mode = mode;
+    s_overwrite_armed = -1;
+    s_status[0] = '\0';
+    s_thumbs_scanned = 0;
+    s_repeat_dir = 0;
+    /* Edges start from what is held now. */
+    s_prev_inputs = held;
+    s_dirty = 1;
+}
+
+int snes_savestate_menu_take_loaded(void)
+{
+    int l = s_loaded;
+    s_loaded = 0;
+    return l;
 }
 
 void snes_savestate_menu_set_compose(SnesSavestateComposeFn compose)
