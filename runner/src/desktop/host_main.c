@@ -1499,10 +1499,25 @@ static void DrawPpuFrameWithPerf(void) {
   RecordFrameTiming(g_present_frame);
 }
 
-/* Seat-0 input word the overlays navigate with — the same sources the guest
- * gets, minus the script (an overlay is a human facility). */
-static uint32 OverlayNavInputs(void) {
+/* Seat-0 input word as the guest sees it, minus the script (an overlay is a
+ * human facility). The pad gestures match against this. */
+static uint32 OverlayGuestInputs(void) {
   return g_input_state | g_pad_buttons | g_gamepad[0].axis_buttons;
+}
+
+/* The word the overlays navigate with. Play maps pads by SNES position
+ * (south = SNES B, east = SNES A), which made every menu confirm on the
+ * pad's B and go back on its A, the reverse of an Xbox-layout pad or the
+ * Steam Deck. For menus a gamepad's SNES_PAD_A is its physical south button
+ * and SNES_PAD_B its east button, whatever [GamepadMap] says; keyboard bits
+ * are left as they are. */
+static uint32 OverlayNavInputs(void) {
+  uint32 pad = g_pad_buttons & ~(uint32)(SNES_PAD_A | SNES_PAD_B);
+  for (int i = 0; i < 2; i++) {
+    if (g_gamepad[i].modifiers & (1u << kGamepadBtn_A)) pad |= SNES_PAD_A;
+    if (g_gamepad[i].modifiers & (1u << kGamepadBtn_B)) pad |= SNES_PAD_B;
+  }
+  return g_input_state | pad | g_gamepad[0].axis_buttons;
 }
 
 /* Controller and joystick events, in ONE place, because the overlays' modal
@@ -1731,7 +1746,7 @@ static void PadGestureConfigure(PadGesture *g, const char *configured,
 /* Edge-triggered: true on the frame the whole gesture becomes held. */
 static bool PadGesturePressed(PadGesture *g) {
   if (!g->ok) return false;
-  const uint32 pad = OverlayNavInputs();
+  const uint32 pad = OverlayGuestInputs();
   const uint32 raw = g_gamepad[0].modifiers;
   const bool held = (pad & g->pad) == g->pad && (raw & g->raw) == g->raw;
   const bool pressed = held && !g->was_held;
@@ -1835,11 +1850,11 @@ static void OverlaySelftestPadTick(unsigned pump) {
   case 2:  SelftestPadReleaseAll(); break;
   case 6:  SelftestPadSet(nav, true); break;
   case 9:  SelftestPadSet(nav, false); break;
-  /* SDL's south button: SNES B under the default [GamepadMap] (pad "A"
-   * is the SNES B, pad "B" is the SNES A). The east button would be the
-   * SNES A -- load in the browser, commit in rewind -- which is exactly the
-   * wrong one to test "close" with, and this test first did. */
-  case 14: SelftestPadSet(SDL_CONTROLLER_BUTTON_A, true); break;
+  /* SDL's east button: "back" in every overlay (OverlayNavInputs reads a
+   * pad's south/east as confirm/back). The south button would load in the
+   * browser and commit in rewind, which is the wrong one to test "close"
+   * with. */
+  case 14: SelftestPadSet(SDL_CONTROLLER_BUTTON_B, true); break;
   case 40:
     fprintf(stderr, "[overlay_selftest_pad] FAIL: %s did not close from the pad within 40 pumps\n",
             g_selftest_pad_phase == 1 ? "save-state browser" : "rewind");
