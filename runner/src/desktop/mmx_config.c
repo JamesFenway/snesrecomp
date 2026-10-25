@@ -86,6 +86,11 @@ void ConfigUseStateMenuDefaults(void) {
 void ConfigUseInGameLauncherDefaults(void) {
   kDefaultKbdControls[kKeys_OpenLauncher] = C(SDLK_l);
 }
+/* Escape collides with nothing in the table above. Unbound for a host that
+ * does not offer the pause menu, so its KeyMap is unchanged. */
+void ConfigUsePauseMenuDefaults(void) {
+  kDefaultKbdControls[kKeys_PauseMenu] = _(SDLK_ESCAPE);
+}
 #undef _
 #undef A
 #undef C
@@ -105,7 +110,7 @@ static const KeyNameId kKeyNameId[] = {
   M(Load), M(Save),
   S(Fullscreen), S(Reset),
   S(Pause), S(PauseDimmed), S(Turbo), S(WindowBigger), S(WindowSmaller), S(VolumeUp), S(VolumeDown), S(DisplayPerf), S(ToggleRenderer), S(ToggleWidescreen),
-  S(SaveStateMenu), S(Rewind), S(Screenshot), S(OpenLauncher),
+  S(SaveStateMenu), S(Rewind), S(Screenshot), S(OpenLauncher), S(PauseMenu),
 };
 #undef S
 #undef M

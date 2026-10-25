@@ -73,6 +73,7 @@
 #include "widescreen.h"
 #include "snes_savestate_menu.h"
 #include "snes_rewind.h"
+#include "snes_pause_menu.h"
 #include "snes_overlay_draw.h"
 #include "snes_osd.h"
 #include "snes_runahead.h"
@@ -407,6 +408,14 @@ static struct RendererFuncs g_renderer_funcs;
 static int g_savestate_menu_hotkey;
 static int g_rewind_hotkey;
 static int g_open_launcher_hotkey;   /* in_game_launcher only */
+static int g_pause_menu_hotkey;      /* pause_menu only */
+/* BACK TO MENU: frames left to run uncapped after the reset, until the
+ * title's title_menu_ready() says its title menu is up. 0 = not skipping. */
+static unsigned g_title_skip;
+/* Pause-menu self-test (SNESRECOMP_PAUSE_MENU_SELFTEST), see
+ * PauseSelftestNav: the step being played, -1 when none. */
+static int g_pause_selftest_step = -1;
+static uint32 PauseSelftestNav(uint32 real);
 static uint64_t g_state_generation;
 
 /* The last field actually presented, kept so an overlay can freeze the guest
@@ -1595,6 +1604,14 @@ static uint32 OverlayFilterGuestInput(uint32 inputs) {
   return inputs & ~g_overlay_release_mask;
 }
 
+/* The pause menu's keys: the PauseMenu key (Escape unless rebound) and
+ * Escape / Backspace go back; everything else is on the SNES word. */
+static void PauseMenuKeyDown(int key, int repeat) {
+  if (!repeat && FindCmdForSdlKey((SDL_Keycode)key, SDL_GetModState()) == kKeys_PauseMenu)
+    key = (int)SDLK_ESCAPE;
+  snes_pause_menu_handle_key(key, repeat);
+}
+
 /* The overlays' event pump. Quit ends the run; a key press goes to the panel
  * through `key_down` and never through HandleInput; a key release still
  * reaches HandleInput so a direction held across the close does not stick
@@ -1612,7 +1629,7 @@ static void PumpOverlayEvents(bool *running, void (*key_down)(int key, int repea
     case SDL_KEYDOWN:
       /* The browser consumes SNES control bits too. Dispatch only controls;
        * slot/reset hotkeys must not change the guest behind a modal panel. */
-      if (key_down == snes_savestate_menu_handle_key) {
+      if (key_down == snes_savestate_menu_handle_key || key_down == PauseMenuKeyDown) {
         int cmd = FindCmdForSdlKey(SNESRECOMP_SDL_EVENT_KEY(event),
                                   SNESRECOMP_SDL_EVENT_MOD(event));
         if (cmd >= kKeys_Controls && cmd <= kKeys_Controls_Last)
@@ -1849,8 +1866,12 @@ static void PresentFrozenWithOverlay(void) {
   const uint32_t *panel = NULL;
   int pw = 0, ph = 0;
   int is_menu = snes_savestate_menu_overlay_image(&panel, &pw, &ph) && panel;
-  if (!is_menu && !(snes_rewind_overlay_image(&panel, &pw, &ph) && panel))
+  int is_pause = 0;
+  if (!is_menu && !(snes_rewind_overlay_image(&panel, &pw, &ph) && panel)) {
     panel = NULL;
+    is_pause = snes_pause_menu_overlay_image(&panel, &pw, &ph) && panel;
+    if (!is_pause) panel = NULL;
+  }
 
   /* The draw buffer is the FROZEN FRAME at twice its size, whichever panel
    * is up. It used to be the panel's own size, which is right for the
@@ -1879,7 +1900,16 @@ static void PresentFrozenWithOverlay(void) {
     memset(pixel_buffer, 0, (size_t)draw_h * (size_t)pitch);
 
   if (panel) {
-    if (is_menu) {
+    if (is_pause) {
+      /* The game stays visible, dimmed across the whole field (widescreen
+       * margins too), with the menu's box centred over it. */
+      for (int y = 0; y < draw_h; y++) {
+        uint32_t *row = (uint32_t *)(pixel_buffer + (size_t)y * (size_t)pitch);
+        for (int x = 0; x < draw_w; x++)
+          row[x] = 0xFF000000u + ((row[x] >> 2) & 0x3F3F3Fu) + ((row[x] >> 3) & 0x1F1F1Fu);
+      }
+      snes_ovl_blit_panel(pixel_buffer, pitch, draw_w, draw_h, panel, pw, ph);
+    } else if (is_menu) {
       /* EndDraw applies SNES pixel-aspect correction to this buffer. Keep
        * the menu's stock proportions before that presentation step. */
       snes_ovl_blit_panel(pixel_buffer, pitch, draw_w, draw_h, panel, pw, ph);
@@ -1899,9 +1929,24 @@ static void PresentFrozenWithOverlay(void) {
    * to check that a panel actually reaches the screen rather than inferring
    * it from the module reporting itself open. */
   {
-    static int dumped_menu = 0, dumped_rewind = 0;
+    /* SNESRECOMP_PAUSE_MENU_DUMP=<prefix>: <prefix>.<step>.ppm, the first
+     * present of each step of the pause-menu self-test (the browser it
+     * opens included; see PauseSelftestNav). */
+    static int dumped_menu = 0, dumped_rewind = 0, dumped_step = -1;
+    static int not_dumped;
+    char step_path[512];
     const char *dump = is_menu ? HostGetenv("OVERLAY_DUMP") : HostGetenv("REWIND_DUMP");
     int *dumped = is_menu ? &dumped_menu : &dumped_rewind;
+    if (is_pause) dump = NULL;
+    if ((is_pause || is_menu) && HostGetenv("PAUSE_MENU_DUMP") && g_pause_selftest_step >= 0 &&
+        dumped_step != g_pause_selftest_step) {
+      snprintf(step_path, sizeof(step_path), "%s.%d.ppm",
+               HostGetenv("PAUSE_MENU_DUMP"), g_pause_selftest_step);
+      dumped_step = g_pause_selftest_step;
+      dump = step_path;
+      not_dumped = 0;
+      dumped = &not_dumped;
+    }
     if (dump && !*dumped && panel) {
       FILE *f = fopen(dump, "wb");
       if (f) {
@@ -1916,7 +1961,7 @@ static void PresentFrozenWithOverlay(void) {
         fclose(f);
         *dumped = 1;
         fprintf(stderr, "[overlay_dump] wrote %s (%dx%d, %s)\n", dump, draw_w, draw_h,
-                is_menu ? "save-state browser" : "rewind filmstrip");
+                is_pause ? "pause menu" : is_menu ? "save-state browser" : "rewind filmstrip");
       }
     }
   }
@@ -1947,7 +1992,7 @@ static void RunSavestateMenuLoop(bool *running) {
     if (!*running)
       snes_savestate_menu_close();
     OverlaySelftestPadTick(frames);
-    snes_savestate_menu_poll_nav(OverlayNavInputs(), SDL_GetTicks());
+    snes_savestate_menu_poll_nav(PauseSelftestNav(OverlayNavInputs()), SDL_GetTicks());
     PresentFrozenWithOverlay();
     SDL_Delay(8);
     frames++;
@@ -3024,6 +3069,178 @@ static void RunInGameLauncher(bool *running, const char **exit_reason) {
 #endif
 }
 
+/* Pause-menu self-test, off by default:
+ *   SNESRECOMP_PAUSE_MENU_SELFTEST="<frame>:<keys>[;<frame>:<keys>...]"
+ * opens the pause menu at <frame> and plays <keys> into it as pad presses,
+ * one per pump: u d l r (directions), a b x (buttons), s (Start). Each press
+ * is preceded by a release, and the browser SAVE / LOAD opens takes the same
+ * queue, so a whole visit (open, save, back, resume) runs headless. With
+ * SNESRECOMP_PAUSE_MENU_DUMP=<prefix>, the first present after each press is
+ * written to <prefix>.<step>.ppm (step 0 = the menu as it opened). The
+ * property worth checking is the overlays' own: a frozen guest comes back
+ * BIT IDENTICAL, so a STATE_TRACE with RESUME armed matches one without. */
+static char g_pause_selftest_spec[512];
+static size_t g_pause_selftest_pos;     /* next "<frame>:" in the spec */
+static long g_pause_selftest_frame = -2;
+static const char *g_pause_selftest_keys; /* the visit being played */
+static int g_pause_selftest_release;    /* 1: next pump is the release */
+
+static void PauseSelftestScheduleNext(void) {
+  const char *p = g_pause_selftest_spec + g_pause_selftest_pos;
+  char *end = NULL;
+  long f;
+  g_pause_selftest_frame = -1;
+  while (*p == ';' || *p == ' ') p++;
+  if (!*p) return;
+  f = strtol(p, &end, 0);
+  if (!end || *end != ':') return;
+  g_pause_selftest_frame = f;
+  g_pause_selftest_pos = (size_t)(end + 1 - g_pause_selftest_spec);
+}
+
+/* Main loop, once per frame: open the menu when the next visit is due. */
+static void PauseSelftestTick(unsigned frame) {
+  if (g_pause_selftest_frame == -2) {
+    const char *v = HostGetenv("PAUSE_MENU_SELFTEST");
+    snprintf(g_pause_selftest_spec, sizeof(g_pause_selftest_spec), "%s", v ? v : "");
+    g_pause_selftest_pos = 0;
+    PauseSelftestScheduleNext();
+  }
+  if (g_pause_selftest_frame < 0 || (long)frame != g_pause_selftest_frame) return;
+  g_pause_selftest_keys = g_pause_selftest_spec + g_pause_selftest_pos;
+  g_pause_selftest_release = 1;
+  g_pause_selftest_step = 0;
+  g_pause_menu_hotkey = 1;
+  fprintf(stderr, "[pause_selftest] frame %u: opening the pause menu, keys \"%.*s\"\n",
+          frame, (int)strcspn(g_pause_selftest_keys, ";"), g_pause_selftest_keys);
+  {
+    const char *semi = strchr(g_pause_selftest_keys, ';');
+    g_pause_selftest_pos = semi ? (size_t)(semi - g_pause_selftest_spec) : strlen(g_pause_selftest_spec);
+  }
+  PauseSelftestScheduleNext();
+}
+
+/* Every modal pump's nav word: the real one, or the self-test's next key. */
+static uint32 PauseSelftestNav(uint32 real) {
+  const char *k = g_pause_selftest_keys;
+  uint32 bit = 0;
+  if (!k) return real;
+  while (*k == ',' || *k == ' ') k++;
+  if (!*k || *k == ';') {
+    g_pause_selftest_keys = NULL;
+    fprintf(stderr, "[pause_selftest] keys done (pause menu %s)\n",
+            snes_pause_menu_is_open() ? "OPEN" : "closed");
+    return real;
+  }
+  if (g_pause_selftest_release) {
+    g_pause_selftest_release = 0;
+    return 0;
+  }
+  switch (*k) {
+  case 'u': bit = SNES_PAD_UP; break;
+  case 'd': bit = SNES_PAD_DOWN; break;
+  case 'l': bit = SNES_PAD_LEFT; break;
+  case 'r': bit = SNES_PAD_RIGHT; break;
+  case 'a': bit = SNES_PAD_A; break;
+  case 'b': bit = SNES_PAD_B; break;
+  case 'x': bit = SNES_PAD_X; break;
+  case 's': bit = SNES_PAD_START; break;
+  default:
+    fprintf(stderr, "[pause_selftest] unknown key '%c' skipped\n", *k);
+    break;
+  }
+  g_pause_selftest_keys = k + 1;
+  g_pause_selftest_release = 1;
+  g_pause_selftest_step++;
+  return bit;
+}
+
+/* The pause menu's modal pump. The guest is FROZEN throughout, as in the
+ * save-state browser: nothing here calls RtlRunFrame. SAVE and LOAD run the
+ * browser's own loop and come back here; OPTIONS runs the in-game launcher
+ * and comes back; RESUME, a successful load, BACK TO MENU and BACK TO
+ * LAUNCHER leave. */
+static void RunPauseMenuLoop(bool *running, const char **exit_reason) {
+  unsigned frames = 0;
+  bool to_title = false;
+  host_report_breadcrumb("pause menu OPEN - guest frozen until RESUME "
+                         "(pad B or Select+Start, Escape on the keyboard)");
+  snes_pause_menu_open();
+  g_turbo = false;   /* follows a held key; the menu eats the release */
+  g_overlay_modal = true;
+  SetAudioPaused(true);
+  while (snes_pause_menu_is_open() && *running) {
+    PumpOverlayEvents(running, &PauseMenuKeyDown);
+    if (!*running) break;
+    snes_pause_menu_poll_nav(PauseSelftestNav(OverlayNavInputs()), SDL_GetTicks());
+    const SnesPauseAction a = snes_pause_menu_take_action();
+    switch (a) {
+    case SNES_PAUSE_SAVE:
+    case SNES_PAUSE_LOAD: {
+      snes_savestate_menu_open_mode(a == SNES_PAUSE_LOAD ? SNES_SSM_MODE_LOAD
+                                                         : SNES_SSM_MODE_SAVE,
+                                    OverlayNavInputs());
+      host_report_breadcrumb("pause menu: %s", a == SNES_PAUSE_LOAD ? "LOAD" : "SAVE");
+      RunSavestateMenuLoop(running);
+      g_overlay_modal = true;
+      SetAudioPaused(true);
+      if (snes_savestate_menu_take_loaded()) {
+        host_report_breadcrumb("pause menu: state loaded, resuming");
+        snes_pause_menu_close();
+      } else {
+        snes_pause_menu_rearm(OverlayNavInputs());
+      }
+      break;
+    }
+    case SNES_PAUSE_OPTIONS:
+      host_report_breadcrumb("pause menu: OPTIONS");
+      RunInGameLauncher(running, exit_reason);
+      g_overlay_modal = true;
+      SetAudioPaused(true);
+      snes_pause_menu_rearm(OverlayNavInputs());
+      break;
+    case SNES_PAUSE_TITLE:
+      to_title = true;
+      break;
+    case SNES_PAUSE_QUIT:
+      *running = false;
+      *exit_reason = getenv("SNESRECOMP_RETURN_TO") && getenv("SNESRECOMP_RETURN_TO")[0]
+          ? "player went back to the launcher from the pause menu"
+          : "player quit from the pause menu";
+      break;
+    default:
+      break;
+    }
+    if (!*running || !snes_pause_menu_is_open()) break;
+    PresentFrozenWithOverlay();
+    SDL_Delay(8);
+    frames++;
+  }
+  if (snes_pause_menu_is_open()) snes_pause_menu_close();
+  g_overlay_modal = false;
+  ResetAudioTimeline();
+  SetAudioPaused(g_paused);
+  OverlayNoteClosed();
+  g_pause_selftest_step = -1;
+  host_report_breadcrumb("pause menu CLOSED after %u pumps%s", frames,
+                         to_title ? " - back to the title menu" : "");
+  if (to_title && *running) {
+    ConsoleReset();
+    if (g_game->title_menu_ready) {
+      /* A minute of frames at most. Nothing is drawn meanwhile: one black
+       * frame now, and the next present is the title menu. */
+      g_title_skip = 60 * 60;
+      uint8 *px = NULL;
+      int pitch = 0;
+      g_renderer_funcs.BeginDraw(g_snes_width, g_snes_height, &px, &pitch);
+      if (px) memset(px, 0, (size_t)g_snes_height * (size_t)pitch);
+      g_renderer_funcs.EndDraw();
+    }
+  } else {
+    GameReset();
+  }
+}
+
 int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **argv) {
   if (!game || !game->game_info || !game->display_name) {
     fprintf(stderr, "snesrecomp_desktop_main: descriptor needs display_name and game_info\n");
@@ -3134,6 +3351,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
   }
   if (game->state_menu_hotkeys) ConfigUseStateMenuDefaults();
   if (game->in_game_launcher) ConfigUseInGameLauncherDefaults();
+  if (game->pause_menu) ConfigUsePauseMenuDefaults();
   ParseConfigFile(config_file);
   g_active_config_file = config_file;
   /* Local overrides (gitignored). Last parser to set a key wins. */
@@ -3158,11 +3376,11 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
       { "SaveStateMenu", kKeys_SaveStateMenu }, { "Rewind", kKeys_Rewind },
       { "Screenshot", kKeys_Screenshot }, { "DisplayPerf", kKeys_DisplayPerf },
       { "Pause", kKeys_Pause }, { "Reset", kKeys_Reset },
-      { "OpenLauncher", kKeys_OpenLauncher },
+      { "OpenLauncher", kKeys_OpenLauncher }, { "PauseMenu", kKeys_PauseMenu },
     };
     static const SDL_Keycode kKeys[] = {
       SDLK_KP_PLUS, SDLK_KP_MINUS, SDLK_F11, SDLK_F12, SDLK_f, SDLK_p, SDLK_EQUALS, SDLK_MINUS,
-      SDLK_F7, SDLK_F8, SDLK_r, SDLK_l,
+      SDLK_F7, SDLK_F8, SDLK_r, SDLK_l, SDLK_ESCAPE,
     };
     for (size_t i = 0; i < sizeof(kProbe) / sizeof(kProbe[0]); i++) {
       const char *bound = "(unbound among the probed keys)";
@@ -3202,6 +3420,15 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
       g_config.audio_samples);
   PadGestureConfigure(&g_rewind_gesture, g_config.rewind_gesture, "Select+R3",
                       "rewind", "RewindGesture");
+  if (game->pause_menu) {
+    const char *rt = getenv("SNESRECOMP_RETURN_TO");
+#if defined(RECOMP_LAUNCHER)
+    const int has_options = game->in_game_launcher;
+#else
+    const int has_options = 0;
+#endif
+    snes_pause_menu_configure(game->display_name, has_options, rt && rt[0]);
+  }
   if (game->in_game_launcher)
     PadGestureConfigure(&g_launcher_gesture, g_config.launcher_gesture,
                         "Select+L3", "launcher", "LauncherGesture");
@@ -3860,7 +4087,7 @@ error_reading:;
     }
 
     if (g_paused && !g_savestate_menu_hotkey && !g_rewind_hotkey &&
-        !g_open_launcher_hotkey) {
+        !g_open_launcher_hotkey && !g_pause_menu_hotkey) {
       snes_host_clock_reset(&video_clock, MonotonicSeconds(), g_simulation_hz, presentation_hz);
       SDL_Delay(16);
       continue;
@@ -3992,7 +4219,7 @@ error_reading:;
     /* Pacing. A title that decouples presentation (presentation_hz hook)
      * gets re-presented between simulated frames from the captured field;
      * everyone else presents once per simulated frame. */
-    bool paced_realtime = !g_turbo && !g_config.disable_frame_delay;
+    bool paced_realtime = !g_turbo && !g_title_skip && !g_config.disable_frame_delay;
     bool paced_custom = PresentationDecoupled() && paced_realtime;
     double video_now = MonotonicSeconds();
     if (video_now >= next_display_check) {
@@ -4064,6 +4291,19 @@ error_reading:;
     uint32 human = OverlayFilterGuestInput(
         snes_savestate_menu_filter_guest_input(OverlayNavInputs()));
     uint32 inputs = human | (g_gamepad[1].axis_buttons << 12);
+    /* The pause menu's Select+Start chord: those two bits reach the guest a
+     * few frames late, so a chord never does (snes_pause_menu.h). The other
+     * gestures keep reading `human` as it was. BACK TO MENU's uncapped boot
+     * takes no input at all. */
+    int pause_chord = 0;
+    if (game->pause_menu) {
+      PauseSelftestTick(frameCtr);
+      if (g_title_skip)
+        inputs = 0;
+      else
+        inputs = snes_pause_menu_filter_guest_input(human, &pause_chord) |
+                 (g_gamepad[1].axis_buttons << 12);
+    }
 
     /* Overlay self-test (SNESRECOMP_OVERLAY_SELFTEST=<frame>, off by default).
      * The overlays can only be driven by a human, so nothing automated ever
@@ -4164,10 +4404,19 @@ error_reading:;
         (void)snes_savestate_menu_poll_open(SNES_PAD_SELECT | SNES_PAD_R);
     }
     if (snes_savestate_menu_is_open()) {
+      if (snes_pause_menu_is_open()) snes_pause_menu_close();
       RunSavestateMenuLoop(&running);
       GameReset();
       continue;   /* guest was frozen: no frame to run or present */
     }
+    if (game->pause_menu && (pause_chord || g_pause_menu_hotkey) && !snes_rewind_is_open()) {
+      g_pause_menu_hotkey = 0;
+      RunPauseMenuLoop(&running, &exit_reason);
+      if (!running) break;
+      continue;   /* guest was frozen: no frame to run or present */
+    }
+    g_pause_menu_hotkey = 0;
+    if (snes_pause_menu_is_open()) snes_pause_menu_close();
     if (g_paused) continue;
     /* The script ticks HERE, after every path that can leave this iteration
      * without running a frame. Ticked above the overlay checks, an
@@ -4193,7 +4442,7 @@ error_reading:;
     bool runahead_captured = false;
     {
       const uint32 word = inputs | GetActiveControllers() | debug_server_get_controller_active_mask();
-      if (g_turbo || !snes_runahead_run_frame(word))
+      if (g_turbo || g_title_skip || !snes_runahead_run_frame(word))
         RtlRunFrame(word);
       else
         runahead_captured = true;   /* it rasterised the speculated frame */
@@ -4228,7 +4477,26 @@ error_reading:;
       host_report_breadcrumb("first frame simulated");
     else if (frameCtr % 3600 == 0)   /* ~once a minute at 60 fps */
       host_report_breadcrumb("heartbeat: frame=%u", frameCtr);
-    g_snes->disableRender = g_turbo && (frameCtr & 0xf) != 0;
+    /* This frame ran with rendering off; nothing of it is shown. */
+    const bool title_skip_frame = g_title_skip != 0;
+    if (g_title_skip) {
+      /* BACK TO MENU: run the boot uncapped until the title menu is up. */
+      static unsigned skipped;
+      skipped++;
+      if (g_game->title_menu_ready && g_game->title_menu_ready()) {
+        host_report_breadcrumb("pause menu: title menu up after %u uncapped frames", skipped);
+        g_title_skip = 0;
+      } else if (--g_title_skip == 0) {
+        host_report_breadcrumb("pause menu: no title menu after %u frames; "
+                               "going on at normal speed", skipped);
+      }
+      if (!g_title_skip) {
+        skipped = 0;
+        ResetAudioTimeline();
+        g_reset_clock = true;
+      }
+    }
+    g_snes->disableRender = g_title_skip || (g_turbo && (frameCtr & 0xf) != 0);
     snes_osd_set_turbo(g_turbo);
 
     profile_start = ProfileStart();
@@ -4254,7 +4522,7 @@ error_reading:;
     }
     else
       snes_host_clock_reset(&video_clock, MonotonicSeconds(), g_simulation_hz, presentation_hz);
-    if (!g_snes->disableRender &&
+    if (!g_snes->disableRender && !title_skip_frame &&
         (!paced_custom || snes_host_clock_presentation_due(&video_clock, MonotonicSeconds()) ||
          (run_frames && frameCtr >= run_frames))) {
       double presented_at = MonotonicSeconds();
@@ -4482,6 +4750,9 @@ static void HandleCommand(uint32 j, bool pressed) {
     case kKeys_Screenshot: RequestScreenshot(); break;
     case kKeys_OpenLauncher:
       if (g_game->in_game_launcher) g_open_launcher_hotkey = 1;
+      break;
+    case kKeys_PauseMenu:
+      if (g_game->pause_menu) g_pause_menu_hotkey = 1;
       break;
     case kKeys_ToggleRenderer:
       g_ppu_render_flags ^= kPpuRenderFlags_NewRenderer;

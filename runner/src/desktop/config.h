@@ -44,6 +44,9 @@ enum {
   /* Reopen the launcher mid-game (SnesDesktopHostGame.in_game_launcher).
    * Appended for the same reason as SaveStateMenu. */
   kKeys_OpenLauncher,
+  /* In-game pause menu (SnesDesktopHostGame.pause_menu, snes_pause_menu.c).
+   * Appended for the same reason as SaveStateMenu. */
+  kKeys_PauseMenu,
   kKeys_Total,
 };
 
@@ -196,6 +199,8 @@ extern Config g_config;
 void ConfigUseStateMenuDefaults(void);
 /* Opt in before parsing: binds [KeyMap] OpenLauncher to Ctrl+L by default. */
 void ConfigUseInGameLauncherDefaults(void);
+/* Opt in before parsing: binds [KeyMap] PauseMenu to Escape by default. */
+void ConfigUsePauseMenuDefaults(void);
 void ParseConfigFile(const char *filename);
 // Re-apply only the [KeyMap] section (launcher hotkey editor wrote it after
 // the initial parse). Keyboard command map is rebuilt; gamepad map and all

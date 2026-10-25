@@ -71,6 +71,34 @@ opens it at that frame, recomp-ui's `LNG_SMOKE_FRAMES=<n>` closes it after n
 frames (RESUME), and `SNESRECOMP_INGAME_LAUNCHER_SELFTEST_RESTART=1` takes the
 restart path. The guest must come back bit-identical.
 
+## In-game pause menu (opt-in)
+
+`SnesDesktopHostGame.pause_menu = 1` adds a pause menu over the frozen game
+(`runner/src/snes_pause_menu.c`, its modal loop `RunPauseMenuLoop` in
+`host_main.c`): RESUME, SAVE, LOAD, OPTIONS, BACK TO MENU and BACK TO
+LAUNCHER. It opens on Select+Start pressed together, or `[KeyMap] PauseMenu`
+(default Escape once opted in). The game's own Start pause is untouched.
+
+| Item | What the host does |
+|---|---|
+| RESUME (also B, Select+Start, Escape) | closes; the guest comes back bit-identical |
+| SAVE / LOAD | the save-state browser opened in that mode (A saves or loads; saving over a used slot takes a second A); B comes back to the menu, a load resumes |
+| OPTIONS | the in-game launcher above; listed only with `in_game_launcher` |
+| BACK TO MENU | asks first; console reset, then the boot runs uncapped, unrendered and without input until the title's `title_menu_ready()` returns nonzero (a minute at most). Without the hook, a plain reset |
+| BACK TO LAUNCHER | asks first; a normal quit (config and autosave written, exit 0). Reads QUIT GAME unless `SNESRECOMP_RETURN_TO` is set, i.e. a front end started the game |
+
+So that the chord never reaches the game, Select and Start reach the guest
+`SNES_PAUSE_CHORD_FRAMES` (4) frames late while the menu is enabled: a lone
+press arrives whole, a press joined by the other inside that window opens the
+menu and is dropped. Scripts and the debug server are not delayed. Netplay
+keeps its own synchronized menu; the pause menu never opens there.
+
+Self-test: `SNESRECOMP_PAUSE_MENU_SELFTEST="<frame>:<keys>[;...]"` opens the
+menu at that frame and plays pad keys into it and into the browser it opens
+(`u d l r a b x s`), e.g. `5000:d,a,a,b,b` saves to the selected slot and
+resumes. `SNESRECOMP_PAUSE_MENU_DUMP=<prefix>` writes each step's picture.
+Unit test: `tests/host/pause_menu`.
+
 ## What stayed in snesrecomp
 
 - `runner/src/launcher.c` / `launcher.h` — shared ROM resolution policy
