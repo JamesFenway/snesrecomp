@@ -1,4 +1,5 @@
 #include "launcher_picker.h"
+#include "host_platform.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -12,7 +13,7 @@
 #  endif
 #endif
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !SNESRECOMP_HOST_NO_SPAWN
 /* Run one shell-wrapped native chooser and read its selected path. */
 static int run_picker_cmd(const char *cmd, char *out, size_t max_len) {
     FILE *p = popen(cmd, "r");
@@ -48,6 +49,12 @@ int snesrecomp_pick_rom_file(char *out, size_t max_len) {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY |
                 OFN_NOCHANGEDIR;
     return GetOpenFileNameA(&ofn) ? 1 : 0;
+#elif SNESRECOMP_HOST_NO_SPAWN
+    /* No shell to run a chooser from. The ROM comes with the app's payload
+     * (or the player puts it in Documents) under the name the build expects. */
+    out[0] = '\0';
+    fprintf(stderr, "[Launcher] No ROM found beside the app and no file chooser on this platform.\n");
+    return 0;
 #else
     out[0] = '\0';
     static const char *const pickers[] = {

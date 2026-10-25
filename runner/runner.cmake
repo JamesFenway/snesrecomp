@@ -39,6 +39,29 @@ set(SNESRECOMP_RUNNER_ROOT ${CMAKE_CURRENT_LIST_DIR})
 get_filename_component(SNESRECOMP_FRAMEWORK_ROOT
     "${SNESRECOMP_RUNNER_ROOT}/.." ABSOLUTE)
 
+# iOS / iPadOS (cmake -G Xcode -DCMAKE_SYSTEM_NAME=iOS). The executable lives
+# in an app bundle that is read-only once installed, so what desktop ports
+# stage beside the executable goes into the bundle's payload/ folder instead,
+# and the host copies it into the app's Documents folder at start
+# (runner/src/host_paths.c). snesrecomp_target_desktop_host() makes the target
+# an app bundle (snesrecomp_target_ios_app).
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(SNESRECOMP_IOS ON)
+else()
+    set(SNESRECOMP_IOS OFF)
+endif()
+
+# The directory files "beside the executable" are staged into, as a
+# generator expression: the executable's own directory, or the bundle's
+# payload/ on iOS.
+function(snesrecomp_stage_root target out_var)
+    if(SNESRECOMP_IOS)
+        set(${out_var} "$<TARGET_FILE_DIR:${target}>/payload" PARENT_SCOPE)
+    else()
+        set(${out_var} "$<TARGET_FILE_DIR:${target}>" PARENT_SCOPE)
+    endif()
+endfunction()
+
 # Portable toolchain packs (retcomm-toolchains cmake-clang-v1) compile and link
 # against a bundled sysroot -- clang.cfg passes --sysroot itself -- and their
 # env.sh exports CMAKE_SYSROOT for the same directory. CMake does not read that
@@ -611,15 +634,16 @@ set(SNESRECOMP_RUNNER_INCLUDE_DIRS
 # player's machine came up with an empty Mods page: the pack root beside the
 # setup host had mods/, the freshly built build/<exe> did not.
 function(snesrecomp_target_stage_dir target source_dir dest_rel)
+    snesrecomp_stage_root(${target} _stage)
     if(NOT IS_DIRECTORY "${source_dir}")
         message(FATAL_ERROR
             "snesrecomp_target_stage_dir(${target}): ${source_dir} is not a directory")
     endif()
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E remove_directory
-            "$<TARGET_FILE_DIR:${target}>/${dest_rel}"
+            "${_stage}/${dest_rel}"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${source_dir}" "$<TARGET_FILE_DIR:${target}>/${dest_rel}"
+            "${source_dir}" "${_stage}/${dest_rel}"
         COMMENT "${target}: staging ${dest_rel}/ beside the executable"
         VERBATIM)
 endfunction()
@@ -683,6 +707,7 @@ endfunction()
 set(SNESRECOMP_MOD_CATALOG_DEST "mods/preloaded/packages")
 
 function(snesrecomp_target_mod_catalog target preloaded_dir)
+    snesrecomp_stage_root(${target} _stage)
     if(NOT TARGET ${target})
         message(FATAL_ERROR
             "snesrecomp_target_mod_catalog: no such target '${target}'")
@@ -728,7 +753,7 @@ function(snesrecomp_target_mod_catalog target preloaded_dir)
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${_pkg_src}"
-            "$<TARGET_FILE_DIR:${target}>/${SNESRECOMP_MOD_CATALOG_DEST}"
+            "${_stage}/${SNESRECOMP_MOD_CATALOG_DEST}"
         COMMENT "${target}: staging the mod catalog into ${SNESRECOMP_MOD_CATALOG_DEST}/"
         VERBATIM)
 
@@ -740,7 +765,7 @@ function(snesrecomp_target_mod_catalog target preloaded_dir)
         list(JOIN _ids "|" _ids_arg)
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND ${CMAKE_COMMAND}
-                "-DSNES_MOD_DEST=$<TARGET_FILE_DIR:${target}>/${SNESRECOMP_MOD_CATALOG_DEST}"
+                "-DSNES_MOD_DEST=${_stage}/${SNESRECOMP_MOD_CATALOG_DEST}"
                 "-DSNES_MOD_IDS=${_ids_arg}"
                 "-DSNES_MOD_TARGET=${target}"
                 -P "${SNESRECOMP_RUNNER_ROOT}/snes_check_mod_catalog.cmake"
@@ -859,6 +884,11 @@ function(snesrecomp_rom_identity target identity_file)
             "this build cannot verify the ROM it is handed.")
     endif()
 
+    # For build steps that need a field without re-reading the file (the
+    # iOS bundle stages the ROM under rom_file).
+    set_property(TARGET ${target} PROPERTY SNESRECOMP_ROM_FILE "${_id_rom_file}")
+    set_property(TARGET ${target} PROPERTY SNESRECOMP_ROM_DISPLAY_NAME "${_id_display_name}")
+
     set(SNESRECOMP_ROM_IDENTITY_SOURCE "${identity_file}")
     set(_out_dir "${CMAKE_CURRENT_BINARY_DIR}/snesrecomp_rom_identity")
     configure_file("${SNESRECOMP_RUNNER_ROOT}/cmake/rom_identity.h.in"
@@ -976,12 +1006,13 @@ endfunction()
 # Opt-in, shared CC0 shader catalog for hosts exposing shader_supported.
 # Keep user-added presets in place; updating built-ins must not delete them.
 function(snesrecomp_target_shader_presets target)
+    snesrecomp_stage_root(${target} _stage)
     set(_presets "${SNESRECOMP_RUNNER_ROOT}/assets/shaders")
     file(GLOB_RECURSE _preset_files CONFIGURE_DEPENDS "${_presets}/*")
     set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS ${_preset_files})
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${_presets}" "$<TARGET_FILE_DIR:${target}>/assets/shaders"
+            "${_presets}" "${_stage}/assets/shaders"
         COMMENT "${target}: staging shared SNES shader presets" VERBATIM)
 endfunction()
 
@@ -1081,10 +1112,16 @@ endfunction()
 #
 #   snesrecomp_target_rom_cache(<target>)
 function(snesrecomp_target_rom_cache target)
+    # rom.cfg names a path on the build machine; an iOS app finds its ROM in
+    # Documents (snesrecomp_target_ios_app stages it there).
+    if(SNESRECOMP_IOS)
+        return()
+    endif()
+    snesrecomp_stage_root(${target} _stage)
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND ${CMAKE_COMMAND}
             -DSRC=${CMAKE_SOURCE_DIR}/rom.cfg
-            -DDST=$<TARGET_FILE_DIR:${target}>/rom.cfg
+            -DDST=${_stage}/rom.cfg
             -P ${SNESRECOMP_RUNNER_ROOT}/stage_if_missing.cmake
         VERBATIM)
 endfunction()
@@ -1097,12 +1134,88 @@ endfunction()
 #
 #   snesrecomp_target_config_seed(<target>)
 function(snesrecomp_target_config_seed target)
+    snesrecomp_stage_root(${target} _stage)
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND ${CMAKE_COMMAND}
             -DSRC=${CMAKE_SOURCE_DIR}/config.ini
-            -DDST=$<TARGET_FILE_DIR:${target}>/config.ini
+            -DDST=${_stage}/config.ini
             -P ${SNESRECOMP_RUNNER_ROOT}/stage_if_missing.cmake
         VERBATIM)
+endfunction()
+
+# ── iOS app bundle ──────────────────────────────────────────────────────────
+#
+# snesrecomp_target_ios_app(<target>)   (called by snesrecomp_target_desktop_host)
+#
+# Makes <target> an iOS app: bundle, Info.plist (runner/ios/Info.plist.in:
+# landscape, full screen, Documents in the Files app, controllers), Xcode
+# signing settings, and the ROM staged into payload/ when one is given.
+# Settings, all cache variables so scripts/ios.sh can pass them with -D:
+#   SNESRECOMP_IOS_TEAM        Apple development team id; empty = unsigned
+#                              (compile checks in CI)
+#   SNESRECOMP_IOS_BUNDLE_ID   bundle identifier (default org.snesrecomp.<target>)
+#   SNESRECOMP_IOS_DISPLAY_NAME  name under the icon (default: the target name)
+#   SNESRECOMP_IOS_ROM         a headerless ROM to bundle; it is copied into
+#                              Documents as rom_identity.txt's rom_file. A
+#                              personal build only: the app then carries the
+#                              ROM as well as the code generated from it.
+set(SNESRECOMP_IOS_TEAM "" CACHE STRING "Apple development team id for iOS signing")
+set(SNESRECOMP_IOS_BUNDLE_ID "" CACHE STRING "iOS bundle identifier (default org.snesrecomp.<target>)")
+set(SNESRECOMP_IOS_DISPLAY_NAME "" CACHE STRING "Name under the iOS app icon (default: the target name)")
+set(SNESRECOMP_IOS_ROM "" CACHE FILEPATH "Headerless ROM to bundle into the iOS app")
+set(SNESRECOMP_IOS_DEPLOYMENT_TARGET "16.0" CACHE STRING "Minimum iOS version")
+
+function(snesrecomp_target_ios_app target)
+    set(_IOS_EXECUTABLE "${target}")
+    if(SNESRECOMP_IOS_BUNDLE_ID)
+        set(_IOS_BUNDLE_ID "${SNESRECOMP_IOS_BUNDLE_ID}")
+    else()
+        string(TOLOWER "org.snesrecomp.${target}" _IOS_BUNDLE_ID)
+    endif()
+    set(_IOS_DISPLAY_NAME "${target}")
+    if(SNESRECOMP_IOS_DISPLAY_NAME)
+        set(_IOS_DISPLAY_NAME "${SNESRECOMP_IOS_DISPLAY_NAME}")
+    endif()
+    # CFBundleShortVersionString takes digits and dots only.
+    set(_IOS_VERSION "0.1.0")
+    if(DEFINED SNESRECOMP_BUILD_VERSION AND
+       SNESRECOMP_BUILD_VERSION MATCHES "^([0-9]+(\\.[0-9]+)*)")
+        set(_IOS_VERSION "${CMAKE_MATCH_1}")
+    endif()
+    set(_plist "${CMAKE_CURRENT_BINARY_DIR}/${target}-Info.plist")
+    configure_file("${SNESRECOMP_RUNNER_ROOT}/ios/Info.plist.in" "${_plist}" @ONLY)
+
+    set_target_properties(${target} PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_INFO_PLIST "${_plist}"
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${_IOS_BUNDLE_ID}"
+        XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "${SNESRECOMP_IOS_DEPLOYMENT_TARGET}"
+        XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+        XCODE_ATTRIBUTE_GCC_GENERATE_DEBUGGING_SYMBOLS "YES")
+    if(SNESRECOMP_IOS_TEAM)
+        set_target_properties(${target} PROPERTIES
+            XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${SNESRECOMP_IOS_TEAM}"
+            XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
+            XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Apple Development")
+    else()
+        set_target_properties(${target} PROPERTIES
+            XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO"
+            XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO")
+    endif()
+
+    if(SNESRECOMP_IOS_ROM)
+        if(NOT EXISTS "${SNESRECOMP_IOS_ROM}")
+            message(FATAL_ERROR "SNESRECOMP_IOS_ROM: ${SNESRECOMP_IOS_ROM} does not exist")
+        endif()
+        snesrecomp_stage_root(${target} _stage)
+        set(_rom_name "$<TARGET_PROPERTY:${target},SNESRECOMP_ROM_FILE>")
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_stage}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${SNESRECOMP_IOS_ROM}" "${_stage}/${_rom_name}"
+            COMMENT "${target}: bundling the ROM into payload/"
+            VERBATIM)
+    endif()
 endfunction()
 
 # The desktop host, as a linkable unit (runner/src/desktop/host_main.h).
@@ -1220,7 +1333,9 @@ function(snesrecomp_target_desktop_host target)
     else()
         snesrecomp_target_post_mortem(${target})
     endif()
-    if(NOT ANDROID)
+    if(SNESRECOMP_IOS)
+        snesrecomp_target_ios_app(${target})
+    elseif(NOT ANDROID)
         snesrecomp_target_opengl(${target})
     endif()
     # Run-ahead and rewind are the host's (snes_runahead.c, snes_rewind.c,

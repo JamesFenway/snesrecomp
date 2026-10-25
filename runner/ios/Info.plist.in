@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- iOS app bundle for a snesrecomp port; written by
+     snesrecomp_target_ios_app() (runner/runner.cmake). -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>@_IOS_EXECUTABLE@</string>
+  <key>CFBundleIdentifier</key>
+  <string>@_IOS_BUNDLE_ID@</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>@_IOS_DISPLAY_NAME@</string>
+  <key>CFBundleDisplayName</key>
+  <string>@_IOS_DISPLAY_NAME@</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@_IOS_VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@_IOS_VERSION@</string>
+  <key>LSRequiresIPhoneOS</key>
+  <true/>
+  <!-- Plain black launch screen: no storyboard needed. -->
+  <key>UILaunchScreen</key>
+  <dict/>
+  <key>UIRequiresFullScreen</key>
+  <true/>
+  <key>UIStatusBarHidden</key>
+  <true/>
+  <key>UIRequiredDeviceCapabilities</key>
+  <array>
+    <string>arm64</string>
+  </array>
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <key>UISupportedInterfaceOrientations~ipad</key>
+  <array>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <!-- Documents (config.ini, saves/, mods/, the ROM) shows in the Files app. -->
+  <key>UIFileSharingEnabled</key>
+  <true/>
+  <key>LSSupportsOpeningDocumentsInPlace</key>
+  <true/>
+  <!-- Controllers drive the app, so the system leaves their buttons to it. -->
+  <key>GCSupportsControllerUserInteraction</key>
+  <true/>
+  <key>GCSupportedGameControllers</key>
+  <array>
+    <dict>
+      <key>ProfileName</key>
+      <string>ExtendedGamepad</string>
+    </dict>
+  </array>
+  <key>ITSAppUsesNonExemptEncryption</key>
+  <false/>
+</dict>
+</plist>
