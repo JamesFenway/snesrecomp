@@ -2571,6 +2571,7 @@ typedef struct PpuHdLine {
   const uint16_t *vram;
   SnesMode7HdTransform transform;
   bool extra_objects;
+  bool extbg;                   /* BG2 shows the Mode 7 layer (EXTBG) */
   uint8_t cgwsel, cgadsub;
   uint16_t fixed_colour;
   uint8_t bright[32 + 31];
@@ -2634,8 +2635,8 @@ static void PpuHdMarkWindow(uint8_t visibility[kPpuBufWidth],
  * from its palette index and three visibility bits (main, sub, colour
  * window) alone, so those colours are kept per line, filled lazily. */
 typedef struct PpuHdScratch {
-  uint32_t lut[8][256];
-  uint32_t tag[8][256];
+  uint32_t lut[32][256];
+  uint32_t tag[32][256];
   uint32_t stamp;
 } PpuHdScratch;
 enum { kPpuHdMaxSlots = 32 };
@@ -2686,7 +2687,8 @@ static void PpuRenderHdLine(const PpuHdLine *l, PpuHdScratch *scratch) {
       unsigned i = (unsigned)(x + kPpuExtraLeftRight);
       uint8_t visible = l->visibility[i];
       uint16_t object = l->object[i];
-      const unsigned lut_row = (visible & 3) | ((visible & 16) >> 2);
+      const unsigned lut_row = (visible & 3) | ((visible & 16) >> 2) |
+                               ((visible & 96) >> 2);
       uint32_t *out = row + (x + (int)l->extra_left_right) * scale;
       for (unsigned sx = 0; sx < scale; ++sx) {
         if (bounded) {
@@ -2711,6 +2713,14 @@ static void PpuRenderHdLine(const PpuHdLine *l, PpuHdScratch *scratch) {
         uint16_t bg = index ? (uint16_t)(0x5000 | index) : 0x0500;
         uint16_t main = visible & 1 ? bg : 0x0500;
         uint16_t sub = visible & 2 ? bg : 0x0500;
+        if (l->extbg && (index & 0x7f)) {
+          /* BG2 = the same sample, bit 7 its priority: BG2.hi above BG1,
+           * BG2.lo below it (the native renderer's 0x8100 / 0x1100). */
+          const uint16_t bg2 = (uint16_t)((index & 0x80 ? 0x8100 : 0x1100) |
+                                          (index & 0x7f));
+          if ((visible & 32) && bg2 > main) main = bg2;
+          if ((visible & 64) && bg2 > sub) sub = bg2;
+        }
         bool sprite = false;
         if ((visible & 4) && object > main) { main = object; sprite = true; }
         if ((visible & 8) && object > sub) { sub = object; sprite = true; }
@@ -2790,7 +2800,7 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
     return;
   }
   bool hd = scale > 1 && PPU_mode(ppu) == 7 &&
-      !PPU_forcedBlank(ppu) && !PPU_m7extBg(ppu) &&
+      !PPU_forcedBlank(ppu) &&
       !PPU_directColor(ppu) && !PPU_interlace(ppu) &&
       !PPU_pseudoHires(ppu) &&
       !(PPU_mosaicEnabled(ppu, 0) && PPU_mosaicSize(ppu) > 1) &&
@@ -2816,15 +2826,20 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
                        : &s_hd_immediate;
   memset(l->visibility, 0, sizeof(l->visibility));
   PpuWindows window;
+  const bool extbg = PPU_m7extBg(ppu);
   for (unsigned sub = 0; sub < 2; ++sub) {
-    for (unsigned object = 0; object < 2; ++object) {
-      unsigned layer = object ? 4 : 0;
+    /* Bits: 1/2 BG1 main/sub, 4/8 OBJ main/sub, 32/64 BG2 (EXTBG) main/sub. */
+    static const uint8_t kLayers[3] = {0, 4, 1};
+    for (unsigned k = 0; k < (extbg ? 3u : 2u); ++k) {
+      unsigned layer = kLayers[k];
       if (!IS_SCREEN_ENABLED(ppu, sub, layer)) continue;
       if (IS_SCREEN_WINDOWED(ppu, sub, layer))
         PpuWindows_Calc(&window, ppu, layer, (int)line);
       else
         PpuWindows_Clear(&window, ppu, layer, (int)line);
-      PpuHdMarkWindow(l->visibility, &window, (uint8_t)(1u << (sub + 2 * object)), false);
+      const uint8_t bit = k == 2 ? (uint8_t)(32u << sub)
+                                 : (uint8_t)(1u << (sub + 2 * k));
+      PpuHdMarkWindow(l->visibility, &window, bit, false);
     }
   }
   PpuWindows_Calc(&window, ppu, 5, (int)line);
@@ -2839,6 +2854,7 @@ static void PpuDrawMode7HdLine(Ppu *ppu, unsigned line) {
   l->vram = PpuRenderVram(ppu);
   l->transform = SnesMode7HdMakeTransform(ppu->m7matrix, ppu->m7sel, line);
   l->extra_objects = ppu->extraObjectCount != 0;
+  l->extbg = extbg;
   l->cgwsel = ppu->cgwsel;
   l->cgadsub = ppu->cgadsub;
   l->fixed_colour = ppu->fixedColor;

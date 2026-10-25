@@ -47,7 +47,12 @@ windows, main/subscreen selection, sprite priorities, colour math and brightness
 Sprites remain on the native grid. Fractional transparent background samples
 can reveal sprites even where the native background sample was opaque.
 
-Other modes are nearest-neighbour scaled. Mosaic, EXTBG, direct colour,
+EXTBG (`$2133` bit 6) is drawn in HD too: BG2 shows the same samples with
+bit 7 as the pixel's priority and the low seven bits as its colour, ranked
+like the native renderer (BG2 high above BG1, BG2 low below sprites of
+priority 0), with BG2's own screen, window and colour-math settings.
+
+Other modes are nearest-neighbour scaled. Mosaic, direct colour,
 interlace, pseudo-hires, active host overlays and custom widescreen line
 enhancers also retain the native composition. This is an explicit fallback,
 not a claim of HD coverage for every PPU combination. No new imagery is
