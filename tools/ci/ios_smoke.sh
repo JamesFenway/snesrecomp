@@ -75,8 +75,18 @@ ios)
         -DCMAKE_OSX_ARCHITECTURES=arm64 \
         -DSNESRECOMP_SETUP_HOST=ON \
         ${SNESRECOMP_SDL3_SOURCE_DIR:+-DSNESRECOMP_SDL3_SOURCE_DIR="$SNESRECOMP_SDL3_SOURCE_DIR"}
+    set +e
     cmake --build "$WORK/build" --config Release --target "$PROJECT" -- \
-        -sdk iphoneos -quiet CODE_SIGNING_ALLOWED=NO
+        -sdk iphoneos CODE_SIGNING_ALLOWED=NO > "$WORK/xcodebuild.log" 2>&1
+    rc=$?
+    set -e
+    grep -E "error:|BUILD (SUCCEEDED|FAILED)|\*\* " "$WORK/xcodebuild.log" | tail -n 60 || true
+    if [ "$rc" -ne 0 ]; then
+        tail -n 80 "$WORK/xcodebuild.log"
+        echo "ios_smoke: xcodebuild failed ($rc)" >&2
+        exit "$rc"
+    fi
+    set -x
     APP=$(find "$WORK/build" -name "$PROJECT.app" -type d | head -n 1)
     test -n "$APP"
     test -x "$APP/$PROJECT"
