@@ -91,6 +91,7 @@ enum {
     INTERP_RESUME_SITE_EXTERNAL,        /* interp_bridge_set_lle_resume_pc    */
     INTERP_RESUME_SITE_ROLLBACK,        /* rollback state load                */
     INTERP_RESUME_SITE_NESTED_DEADLINE, /* nested frame past the host deadline */
+    INTERP_RESUME_SITE_HANDLER_YIELD,   /* reentrant interrupt handler yields */
     INTERP_RESUME_SITE_COUNT
 };
 enum {
@@ -218,6 +219,21 @@ void interp_bridge_set_master_deadline(uint64_t master_clock);
 /* The armed deadline (0 = none), for a title's idle-skip hook that must not
  * step the CPU clock past the frame boundary. */
 uint64_t interp_bridge_master_deadline(void);
+
+/* Reentrant interrupt handlers (default off). A host-run interrupt handler
+ * otherwise runs to its RTI in one call, so a handler that re-enables
+ * interrupts (CLI) and then does a frame's work -- Super Return of the Jedi's
+ * reactor run draws its whole 3D frame inside the bottom split's IRQ, across
+ * several fields, while nested IRQs set each field's splits -- sees no nested
+ * IRQ, no NMI and no frame end: the CPU clock runs fields ahead and those
+ * fields draw without their splits. With this on, a handler run straight from
+ * the frame driver (not from compiled code) with I clear yields at the first
+ * instruction where an IRQ is pending or the master deadline has passed, like
+ * an auto-quiescent run. Its interrupt frame is already on the guest stack,
+ * so the driver resumes the rest as ordinary code (taking the nested
+ * interrupts as it does for main code) and the handler's own RTI returns to
+ * the interrupted PC, as on hardware. */
+void interp_bridge_set_resumable_interrupts(int on);
 void interp_bridge_reset_dynamic_cache(void);
 
 /* True only while a paired AOT bounce is executing inside an auto-quiescent

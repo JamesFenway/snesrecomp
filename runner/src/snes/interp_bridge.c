@@ -720,6 +720,7 @@ static const char *const k_resume_site_names[INTERP_RESUME_SITE_COUNT] = {
     [INTERP_RESUME_SITE_EXTERNAL]        = "external",
     [INTERP_RESUME_SITE_ROLLBACK]        = "rollback",
     [INTERP_RESUME_SITE_NESTED_DEADLINE] = "nested_deadline",
+    [INTERP_RESUME_SITE_HANDLER_YIELD]   = "handler_yield",
 };
 static const char *const k_resume_kind_names[] = {
     "set", "unwind_arm", "unwind_consume", "restore",
@@ -900,6 +901,11 @@ void interp_bridge_set_master_deadline(uint64_t master_clock) {
 
 uint64_t interp_bridge_master_deadline(void) {
     return s_lle_master_deadline;
+}
+
+static int s_resumable_interrupts;
+void interp_bridge_set_resumable_interrupts(int on) {
+    s_resumable_interrupts = on != 0;
 }
 
 int interp_bridge_lle_master_deadline_reached(const CpuState *cpu) {
@@ -1513,6 +1519,13 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
     sync_cpu_to_interp(cpu, &in);
     in.k  = (uint8)((entry_pc24 >> 16) & 0xFF);
     in.pc = (uint16)(entry_pc24 & 0xFFFF);
+    /* Taking an interrupt sets I (and clears D); the frame pushed by the
+     * host holds the interrupted P. A reentrant handler (below) must not
+     * look interruptible before it executes its own CLI. */
+    if (stop_on_rti && s_resumable_interrupts) {
+        in.i = 1;
+        in.d = 0;
+    }
 
     /* Frame base: the routine has returned to its caller when an RTS/RTL pops
      * cpu->S strictly above this. */
@@ -1673,6 +1686,23 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
               sa1_cpu_irq_pending(g_snes->cart->sa1)))) {
             lle_resume_set(pc_before, INTERP_RESUME_SITE_IRQ_PENDING, in.sp);
             sync_interp_to_cpu(&in,cpu);
+            bridge_apu_flush(cpu);
+            return 1;
+        }
+        /* A reentrant interrupt handler (interp_bridge_set_resumable_
+         * interrupts): it re-enabled interrupts and now needs a nested one or
+         * the frame boundary. Only the outermost run, entered by the frame
+         * driver: below compiled code there are host frames to unwind, and a
+         * dispatch from a generated interrupt wrapper returns through C. */
+        if (stop_on_rti && s_resumable_interrupts && steps && !in.i &&
+            !yield_pc && s_interp_bridge_depth == 1 &&
+            s_lle_sched_depth == 0 && !cpu_interrupt_context_active() &&
+            g_snes &&
+            (g_snes->inIrq ||
+             (s_lle_master_deadline &&
+              cpu->master_cycles >= s_lle_master_deadline))) {
+            lle_resume_set(pc_before, INTERP_RESUME_SITE_HANDLER_YIELD, in.sp);
+            sync_interp_to_cpu(&in, cpu);
             bridge_apu_flush(cpu);
             return 1;
         }
