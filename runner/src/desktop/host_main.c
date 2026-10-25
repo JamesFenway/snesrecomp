@@ -1510,13 +1510,12 @@ static uint32 OverlayGuestInputs(void) {
  * pad's B and go back on its A, the reverse of an Xbox-layout pad or the
  * Steam Deck. For menus a gamepad's SNES_PAD_A is its physical south button
  * and SNES_PAD_B its east button, whatever [GamepadMap] says; keyboard bits
- * are left as they are. */
+ * are left as they are. Overlay navigation only: the guest, the release
+ * guard and the gestures read OverlayGuestInputs. */
 static uint32 OverlayNavInputs(void) {
   uint32 pad = g_pad_buttons & ~(uint32)(SNES_PAD_A | SNES_PAD_B);
-  for (int i = 0; i < 2; i++) {
-    if (g_gamepad[i].modifiers & (1u << kGamepadBtn_A)) pad |= SNES_PAD_A;
-    if (g_gamepad[i].modifiers & (1u << kGamepadBtn_B)) pad |= SNES_PAD_B;
-  }
+  if (g_gamepad[0].modifiers & (1u << kGamepadBtn_A)) pad |= SNES_PAD_A;
+  if (g_gamepad[0].modifiers & (1u << kGamepadBtn_B)) pad |= SNES_PAD_B;
   return g_input_state | pad | g_gamepad[0].axis_buttons;
 }
 
@@ -1612,7 +1611,7 @@ static void ResetAudioTimeline(void);
  * the rewind module does not, so the host applies it to both. */
 static uint32 g_overlay_release_mask;
 static void OverlayNoteClosed(void) {
-  g_overlay_release_mask |= OverlayNavInputs();
+  g_overlay_release_mask |= OverlayGuestInputs();
 }
 static uint32 OverlayFilterGuestInput(uint32 inputs) {
   g_overlay_release_mask &= inputs;   /* a released button drops out */
@@ -4304,7 +4303,7 @@ error_reading:;
     }
 
     uint32 human = OverlayFilterGuestInput(
-        snes_savestate_menu_filter_guest_input(OverlayNavInputs()));
+        snes_savestate_menu_filter_guest_input(OverlayGuestInputs()));
     uint32 inputs = human | (g_gamepad[1].axis_buttons << 12);
     /* The pause menu's Select+Start chord: those two bits reach the guest a
      * few frames late, so a chord never does (snes_pause_menu.h). The other
