@@ -64,6 +64,9 @@ fill gen_stubs.c.in      src/gen_stubs.c
 fill variables.h.in      src/variables.h
 fill host_contract.c.in  src/host_contract.c
 fill rom_identity.txt.in rom_identity.txt
+# A config.ini seed, so the payload/ staging path is exercised too.
+printf '[General]\nAutosave = 1\n' > "$WORK/config.ini"
+printf '\nsnesrecomp_target_config_seed(%s)\n' "$PROJECT" >> "$WORK/CMakeLists.txt"
 
 case "$MODE" in
 ios)
@@ -78,9 +81,11 @@ ios)
     test -n "$APP"
     test -x "$APP/$PROJECT"
     test -f "$APP/Info.plist"
-    test -f "$APP/payload/config.ini" || test -d "$APP/payload"
+    plutil -lint "$APP/Info.plist"
     echo "ios_smoke: built $APP"
-    ls -la "$APP" "$APP/payload" || true
+    ls -la "$APP"
+    test -f "$APP/payload/config.ini"
+    ls -laR "$APP/payload"
     ;;
 host)
     cmake -S "$WORK" -B "$WORK/build" -DCMAKE_BUILD_TYPE=Release \

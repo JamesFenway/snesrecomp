@@ -47,6 +47,11 @@ get_filename_component(SNESRECOMP_FRAMEWORK_ROOT
 # an app bundle (snesrecomp_target_ios_app).
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(SNESRECOMP_IOS ON)
+    # Before SDL3 is fetched, so the library and the app agree on it (Xcode
+    # otherwise builds SDL for the SDK's own version and warns at link).
+    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "16.0")
+    endif()
 else()
     set(SNESRECOMP_IOS OFF)
 endif()
@@ -1163,7 +1168,6 @@ set(SNESRECOMP_IOS_TEAM "" CACHE STRING "Apple development team id for iOS signi
 set(SNESRECOMP_IOS_BUNDLE_ID "" CACHE STRING "iOS bundle identifier (default org.snesrecomp.<target>)")
 set(SNESRECOMP_IOS_DISPLAY_NAME "" CACHE STRING "Name under the iOS app icon (default: the target name)")
 set(SNESRECOMP_IOS_ROM "" CACHE FILEPATH "Headerless ROM to bundle into the iOS app")
-set(SNESRECOMP_IOS_DEPLOYMENT_TARGET "16.0" CACHE STRING "Minimum iOS version")
 
 function(snesrecomp_target_ios_app target)
     set(_IOS_EXECUTABLE "${target}")
@@ -1189,7 +1193,7 @@ function(snesrecomp_target_ios_app target)
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_INFO_PLIST "${_plist}"
         XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${_IOS_BUNDLE_ID}"
-        XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "${SNESRECOMP_IOS_DEPLOYMENT_TARGET}"
+        XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "${CMAKE_OSX_DEPLOYMENT_TARGET}"
         XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
         XCODE_ATTRIBUTE_GCC_GENERATE_DEBUGGING_SYMBOLS "YES")
     if(SNESRECOMP_IOS_TEAM)
