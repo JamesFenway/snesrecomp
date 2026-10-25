@@ -87,7 +87,13 @@ ios)
         exit "$rc"
     fi
     set -x
-    APP=$(find "$WORK/build" -name "$PROJECT.app" -type d | head -n 1)
+    APP=$(find "$WORK/build" -name "$PROJECT.app" -type d | grep -v '\$' | head -n 1)
+    # No staging may land in an unexpanded Xcode path.
+    if find "$WORK/build" -maxdepth 2 -name '*$*' | grep -q .; then
+        find "$WORK/build" -maxdepth 2 -name '*$*'
+        echo "ios_smoke: a build step wrote to an unexpanded Xcode path" >&2
+        exit 1
+    fi
     test -n "$APP"
     test -x "$APP/$PROJECT"
     test -f "$APP/Info.plist"

@@ -52,6 +52,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
         set(CMAKE_OSX_DEPLOYMENT_TARGET "16.0")
     endif()
+    # By default the Xcode generator writes $(EFFECTIVE_PLATFORM_NAME) into
+    # $<TARGET_FILE_DIR>, which a POST_BUILD command receives unexpanded: the
+    # staging below then filled a directory literally named
+    # "Release${EFFECTIVE_PLATFORM_NAME}" and the app had no payload/. Ports
+    # build for devices only, so a concrete "Release/" path loses nothing.
+    set_property(GLOBAL PROPERTY XCODE_EMIT_EFFECTIVE_PLATFORM_NAME OFF)
 else()
     set(SNESRECOMP_IOS OFF)
 endif()
