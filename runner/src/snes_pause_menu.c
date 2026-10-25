@@ -215,9 +215,12 @@ static void opt_change(int delta)
 {
   SnesPauseOptionRow r;
   if (!opt_row(s_opt_sel, &r) || r.heading || r.disabled) return;
-  s_options->change(s_opt_sel, delta);
-  /* A feature switched on or off adds or removes the rows under it. */
-  s_opt_sel = opt_settle(s_opt_sel, 1);
+  {
+    /* A feature switched on or off adds or removes rows, its own and (a
+     * rival switched off) ones above it: follow the row it says it is now. */
+    const int now = s_options->change(s_opt_sel, delta);
+    s_opt_sel = opt_settle(now >= 0 ? now : s_opt_sel, 1);
+  }
   s_dirty = 1;
 }
 

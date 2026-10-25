@@ -65,7 +65,9 @@ typedef struct SnesPauseOptionRow {
 typedef struct SnesPauseOptionsSource {
   int  (*count)(void);
   int  (*get)(int index, SnesPauseOptionRow *out);
-  void (*change)(int index, int delta);
+  /* Changes row `index`; returns the index that row has afterwards (rows
+   * may come and go around it), or -1 when it is gone. */
+  int  (*change)(int index, int delta);
   /* One line above the hints, or NULL / "" for none. */
   const char *(*note)(void);
 } SnesPauseOptionsSource;

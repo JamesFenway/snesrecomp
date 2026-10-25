@@ -53,11 +53,12 @@ static int fake_get(int i, SnesPauseOptionRow *r) {
   }
   return 0;
 }
-static void fake_change(int i, int delta) {
+static int fake_change(int i, int delta) {
   g_changes++;
   if (i == 1) g_volume += 10 * delta;
   if (i == 3) g_feature = !g_feature;
   if (i == 4) g_choice += delta;
+  return i;
 }
 static const char *fake_note(void) { return g_changes ? "RESTARTS THE GAME" : NULL; }
 static const SnesPauseOptionsSource g_fake = { fake_count, fake_get, fake_change, fake_note };

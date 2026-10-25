@@ -3245,10 +3245,31 @@ static int PauseOptGet(int i, SnesPauseOptionRow *out) {
   return 1;
 }
 
-static void PauseOptChange(int i, int delta) {
+/* The row now showing the same setting as `was` (rows move when a feature
+ * switches on or off, its rivals included), or -1. */
+static int PauseOptFind(const PauseOptRow *was) {
+  for (int i = 0; i < g_po_count; i++) {
+    const PauseOptRow *r = &g_po_rows[i];
+    if (r->kind != was->kind) continue;
+#if defined(RECOMP_LAUNCHER) && SNESRECOMP_ENABLE_MODS
+    if (r->kind == kPoFeature || r->kind == kPoOption) {
+      if (strcmp(r->feature.package_id, was->feature.package_id) != 0 ||
+          strcmp(r->feature.id, was->feature.id) != 0)
+        continue;
+      if (r->kind == kPoOption && strcmp(r->option.id, was->option.id) != 0) continue;
+    }
+#endif
+    if (r->kind == kPoHeading && strcmp(r->shown.label, was->shown.label) != 0) continue;
+    return i;
+  }
+  return -1;
+}
+
+static int PauseOptChange(int i, int delta) {
   if (g_po_stale) PauseOptRebuild();
-  if (i < 0 || i >= g_po_count) return;
-  const PauseOptRow *r = &g_po_rows[i];
+  if (i < 0 || i >= g_po_count) return -1;
+  const PauseOptRow was = g_po_rows[i];
+  const PauseOptRow *r = &was;
   if (r->kind == kPoVolume) {
     g_config.volume = IntMin(IntMax(0, g_config.volume + 10 * delta), 100);
     ApplyVolume();
@@ -3304,7 +3325,8 @@ static void PauseOptChange(int i, int delta) {
     }
   }
 #endif
-  g_po_stale = true;
+  PauseOptRebuild();
+  return PauseOptFind(&was);
 }
 
 static const char *PauseOptNote(void) {
