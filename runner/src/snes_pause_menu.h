@@ -45,12 +45,37 @@ typedef enum SnesPauseAction {
   SNES_PAUSE_OPTIONS,
   SNES_PAUSE_TITLE,    /* back to the game's title menu (confirmed) */
   SNES_PAUSE_QUIT,     /* back to the launcher, or quit (confirmed) */
+  SNES_PAUSE_OPTIONS_DONE,  /* left the OPTIONS page (B), back on the list */
 } SnesPauseAction;
+
+/* The OPTIONS page: rows the host supplies (volume, mods, ...), drawn and
+ * navigated here. Up/Down pick a row (headings are skipped), Left/Right
+ * change it (-1 / +1), A changes it +1, B leaves the page with
+ * SNES_PAUSE_OPTIONS_DONE. Rows are read again after every change, so a
+ * change may add or remove rows (a feature's options appear when it is on). */
+typedef struct SnesPauseOptionRow {
+  char label[64];
+  char value[40];
+  char help[256];   /* shown under the list while the row is selected */
+  int heading;      /* a section title: not selectable, no value */
+  int indent;       /* an option under the feature above it */
+  int disabled;     /* drawn grey, cannot change */
+} SnesPauseOptionRow;
+
+typedef struct SnesPauseOptionsSource {
+  int  (*count)(void);
+  int  (*get)(int index, SnesPauseOptionRow *out);
+  void (*change)(int index, int delta);
+  /* One line above the hints, or NULL / "" for none. */
+  const char *(*note)(void);
+} SnesPauseOptionsSource;
 
 /* Once, before the first frame. `title` is shown on top (upper-cased; the
  * overlay font has A-Z, 0-9 and some punctuation). OPTIONS is listed only
- * with has_options; to_launcher picks BACK TO LAUNCHER over QUIT GAME. */
-void snes_pause_menu_configure(const char *title, int has_options, int to_launcher);
+ * with an options source; to_launcher picks BACK TO LAUNCHER over QUIT GAME.
+ * The source must outlive the menu. */
+void snes_pause_menu_configure(const char *title, const SnesPauseOptionsSource *options,
+                               int to_launcher);
 
 int  snes_pause_menu_is_open(void);
 void snes_pause_menu_open(void);
@@ -67,12 +92,13 @@ uint32_t snes_pause_menu_filter_guest_input(uint32_t inputs, int *open_now);
 void snes_pause_menu_poll_nav(uint32_t inputs, uint32_t ticks_ms);
 
 /* Keyboard keys that are not on the SNES word: Escape / Backspace go back
- * (out of the question, else resume), and the PauseMenu key resumes. */
+ * (out of the question or the OPTIONS page, else resume). */
 void snes_pause_menu_handle_key(int key, int repeat);
 
 /* The action chosen since the last call, then SNES_PAUSE_NONE again. The
- * menu stays open for SAVE / LOAD / OPTIONS, so the host returns to it; it
- * closes itself for RESUME, TITLE and QUIT. */
+ * menu stays open for SAVE / LOAD / OPTIONS (which opens the page) and
+ * OPTIONS_DONE, so the host returns to it; it closes itself for RESUME,
+ * TITLE and QUIT. */
 SnesPauseAction snes_pause_menu_take_action(void);
 
 /* One line under the items ("NO SAVE TO LOAD", ...); NULL clears it. */
