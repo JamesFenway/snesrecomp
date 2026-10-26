@@ -32,10 +32,41 @@ static void nav(uint32_t word, uint32_t *t) {
   snes_pause_menu_poll_nav(0, (*t)++);
 }
 
+/* A fake OPTIONS source: heading, VOLUME, heading, a feature whose option
+ * row exists only while the feature is on. */
+static int g_volume = 50, g_feature, g_choice, g_changes;
+static int fake_count(void) { return g_feature ? 5 : 4; }
+static int fake_get(int i, SnesPauseOptionRow *r) {
+  switch (i) {
+  case 0: snprintf(r->label, sizeof(r->label), "SOUND"); r->heading = 1; return 1;
+  case 1: snprintf(r->label, sizeof(r->label), "VOLUME");
+          snprintf(r->value, sizeof(r->value), "%d%%", g_volume); return 1;
+  case 2: snprintf(r->label, sizeof(r->label), "DISPLAY"); r->heading = 1; return 1;
+  case 3: snprintf(r->label, sizeof(r->label), "WIDESCREEN WITH A VERY LONG NAME INDEED");
+          snprintf(r->value, sizeof(r->value), "%s", g_feature ? "ON" : "OFF");
+          snprintf(r->help, sizeof(r->help), "Fills the screen. Presentation only, the "
+                   "game plays the same; this help text is long enough to wrap twice.");
+          return 1;
+  case 4: if (!g_feature) return 0;
+          snprintf(r->label, sizeof(r->label), "SHAPE"); r->indent = 1;
+          snprintf(r->value, sizeof(r->value), "%d", g_choice); return 1;
+  }
+  return 0;
+}
+static int fake_change(int i, int delta) {
+  g_changes++;
+  if (i == 1) g_volume += 10 * delta;
+  if (i == 3) g_feature = !g_feature;
+  if (i == 4) g_choice += delta;
+  return i;
+}
+static const char *fake_note(void) { return g_changes ? "RESTARTS THE GAME" : NULL; }
+static const SnesPauseOptionsSource g_fake = { fake_count, fake_get, fake_change, fake_note };
+
 int main(void) {
   uint32_t t = 1000;
   int frames, opened;
-  snes_pause_menu_configure("Test Game", 1, 1);
+  snes_pause_menu_configure("Test Game", &g_fake, 1);
 
   /* Other buttons pass straight through. */
   CHECK(feed(SNES_PAD_B | SNES_PAD_RIGHT, 1, 0, NULL, NULL) == (SNES_PAD_B | SNES_PAD_RIGHT));
@@ -69,6 +100,40 @@ int main(void) {
   nav(SNES_PAD_DOWN, &t);                 /* OPTIONS */
   nav(SNES_PAD_A, &t);
   CHECK(snes_pause_menu_take_action() == SNES_PAUSE_OPTIONS);
+  /* The OPTIONS page: VOLUME first (the heading is skipped). */
+  nav(SNES_PAD_RIGHT, &t);
+  CHECK(g_volume == 60);
+  nav(SNES_PAD_LEFT, &t);
+  nav(SNES_PAD_LEFT, &t);
+  CHECK(g_volume == 40);
+  {   /* Right held: one step, then repeat after the delay. */
+    uint32_t t0 = t;
+    snes_pause_menu_poll_nav(SNES_PAD_RIGHT, t0);
+    snes_pause_menu_poll_nav(SNES_PAD_RIGHT, t0 + SNES_OVL_REPEAT_DELAY + 1);
+    snes_pause_menu_poll_nav(0, t0 + SNES_OVL_REPEAT_DELAY + 2);
+    t = t0 + SNES_OVL_REPEAT_DELAY + 3;
+    CHECK(g_volume == 60);
+  }
+  nav(SNES_PAD_DOWN, &t);                 /* WIDESCREEN (skips DISPLAY) */
+  nav(SNES_PAD_A, &t);
+  CHECK(g_feature == 1);
+  nav(SNES_PAD_DOWN, &t);                 /* SHAPE, there now */
+  nav(SNES_PAD_RIGHT, &t);
+  CHECK(g_choice == 1);
+  {
+    const uint32_t *px; int w, h;
+    CHECK(snes_pause_menu_overlay_image(&px, &w, &h) && px[(h / 2) * w + w / 2] >> 24 == 0xFF);
+  }
+  nav(SNES_PAD_UP, &t);                   /* WIDESCREEN */
+  nav(SNES_PAD_A, &t);                    /* off: SHAPE goes */
+  CHECK(g_feature == 0);
+  nav(SNES_PAD_DOWN, &t);                 /* wraps to VOLUME */
+  nav(SNES_PAD_RIGHT, &t);
+  CHECK(g_volume == 70);
+  CHECK(snes_pause_menu_take_action() == SNES_PAUSE_NONE);
+  nav(SNES_PAD_B, &t);                    /* B leaves the page, not the menu */
+  CHECK(snes_pause_menu_take_action() == SNES_PAUSE_OPTIONS_DONE);
+  CHECK(snes_pause_menu_is_open());
   nav(SNES_PAD_DOWN, &t);                 /* BACK TO MENU */
   nav(SNES_PAD_A, &t);                    /* asks first, NO preselected */
   CHECK(snes_pause_menu_take_action() == SNES_PAUSE_NONE);

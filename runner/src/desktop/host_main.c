@@ -2968,6 +2968,33 @@ static const char *RestartReason(const Config *before, const char *rom,
 }
 #endif /* RECOMP_LAUNCHER */
 
+/* Start the game again after shutdown with `rom`, from this exact frame when
+ * it is the same ROM (saves/resume.sav). Returns false, changing nothing,
+ * when the same ROM could not be saved: restarting would throw the player's
+ * progress away, and what changed is already on disk for the next start. */
+static bool RestartFromHere(const char *rom, bool same_rom, const char *why,
+                            const char *who, const char *reason,
+                            bool *running, const char **exit_reason) {
+  snprintf(g_relaunch.rom, sizeof(g_relaunch.rom), "%s", rom);
+  g_relaunch.with_state = false;
+  g_relaunch.launcher = false;
+  if (same_rom &&
+      snesrecomp_abspath("saves/resume.sav", g_relaunch.state, sizeof(g_relaunch.state)))
+    g_relaunch.with_state = RtlSaveSnapshot(g_relaunch.state);
+  if (same_rom && !g_relaunch.with_state) {
+    host_report_breadcrumb("%s: %s changed but the game could not be saved to "
+                           "restart; it applies next time the game starts", who, why);
+    return false;
+  }
+  g_relaunch.pending = true;
+  *running = false;
+  *exit_reason = reason;
+  host_report_breadcrumb("%s: %s changed, which a running game cannot take; "
+                         "restarting%s", who, why,
+                         g_relaunch.with_state ? " from this moment" : "");
+  return true;
+}
+
 /* The in-game launcher (SnesDesktopHostGame.in_game_launcher). The guest is
  * FROZEN throughout, exactly like the save-state browser: no RtlRunFrame, no
  * draw_ppu_frame. The game window is hidden rather than covered, so a
@@ -3039,32 +3066,12 @@ static void RunInGameLauncher(bool *running, const char **exit_reason) {
       }
     }
     if (why) {
-      /* Start again, from here. A different ROM is a different game, so it
-       * starts from power-on; anything else resumes this exact frame. */
-      bool same_rom = SameRomImage(rom, g_rom_path);
-      snprintf(g_relaunch.rom, sizeof(g_relaunch.rom), "%s",
-               rom[0] ? rom : g_rom_path);
-      g_relaunch.with_state = false;
-      if (same_rom &&
-          snesrecomp_abspath("saves/resume.sav", g_relaunch.state,
-                             sizeof(g_relaunch.state))) {
-        g_relaunch.with_state = RtlSaveSnapshot(g_relaunch.state);
-      }
-      if (same_rom && !g_relaunch.with_state) {
-        /* Restarting now would throw the player's progress away. The edit is
-         * already in config.ini, so it takes effect on the next start. */
-        host_report_breadcrumb("in-game launcher: %s changed but the game could "
-                               "not be saved to restart; it applies next time "
-                               "the game starts", why);
+      /* A different ROM is a different game, so it starts from power-on;
+       * anything else resumes this exact frame. */
+      if (!RestartFromHere(rom[0] ? rom : g_rom_path, SameRomImage(rom, g_rom_path), why,
+                           "in-game launcher", "in-game launcher: restarting to apply a setting",
+                           running, exit_reason))
         ApplyLiveSettings(&before);
-      } else {
-        g_relaunch.pending = true;
-        *running = false;
-        *exit_reason = "in-game launcher: restarting to apply a setting";
-        host_report_breadcrumb("in-game launcher: %s changed, which a running game "
-                               "cannot take; restarting%s", why,
-                               g_relaunch.with_state ? " from this moment" : "");
-      }
     } else {
       ApplyLiveSettings(&before);
       host_report_breadcrumb("in-game launcher CLOSED - settings applied, "
@@ -3080,6 +3087,306 @@ static void RunInGameLauncher(bool *running, const char **exit_reason) {
   SetAudioPaused(g_paused);
   OverlayNoteClosed();
   g_reset_clock = true;
+#endif
+}
+
+/* The pause menu's OPTIONS page (snes_pause_menu.h): VOLUME, then every mod
+ * feature the launcher's Mods page would show, in the Trilogy picker's order
+ * (Display, Gameplay, the rest, Cheats / Testing), each with its options
+ * while it is on. Volume applies at once; mod changes are staged in the mod
+ * runtime and committed when the page is left, and since mod plugins only
+ * activate before the first frame, a commit that changed state.toml
+ * restarts the game from this moment (RestartFromHere). */
+enum { kPoHeading, kPoVolume, kPoFeature, kPoOption };
+typedef struct PauseOptRow {
+  int kind;
+  SnesPauseOptionRow shown;
+#if defined(RECOMP_LAUNCHER) && SNESRECOMP_ENABLE_MODS
+  RecompLauncherCModFeature feature;
+  RecompLauncherCModOption option;
+#endif
+} PauseOptRow;
+static PauseOptRow g_po_rows[96];
+static int g_po_count;
+static bool g_po_stale = true;
+static bool g_po_mods_touched;
+
+#if defined(RECOMP_LAUNCHER) && SNESRECOMP_ENABLE_MODS
+static const RecompLauncherCModProvider *PauseOptMods(void) {
+  const RecompLauncherCModProvider *m = g_mods_ready ? snes_mod_runtime_launcher_provider_c() : NULL;
+  return m && m->feature_count && m->feature_get && m->feature_enable ? m : NULL;
+}
+
+static int PauseOptGroupRank(const char *group) {
+  if (!SDL_strcasecmp(group, "display")) return 0;
+  if (!SDL_strcasecmp(group, "gameplay")) return 1;
+  if (!SDL_strcasecmp(group, "cheats") || !SDL_strcasecmp(group, "testing") ||
+      !SDL_strcasecmp(group, "testing cheats")) return 3;
+  return 2;
+}
+
+/* A choice's label up to its " (" remark: "2x (recommended)" reads "2x". */
+static void PauseOptChoiceText(const RecompLauncherCModProvider *m,
+                               const RecompLauncherCModFeature *f,
+                               const RecompLauncherCModOption *o, char *value, size_t cap,
+                               char *help, size_t help_cap) {
+  snprintf(value, cap, "%s", o->value);
+  for (int c = 0; m->feature_choice_get && c < o->choice_count; c++) {
+    RecompLauncherCModChoice ch;
+    memset(&ch, 0, sizeof(ch));
+    if (!m->feature_choice_get(m->ctx, f->package_id, f->id, o->id, c, &ch)) continue;
+    if (strcmp(ch.value, o->value) != 0) continue;
+    snprintf(value, cap, "%s", ch.label[0] ? ch.label : ch.value);
+    {
+      char *paren = strstr(value, " (");
+      if (paren) *paren = '\0';
+    }
+    if (!o->description[0] && help) snprintf(help, help_cap, "%s", ch.label);
+    break;
+  }
+}
+#endif
+
+static PauseOptRow *PauseOptPush(int kind) {
+  PauseOptRow *r;
+  if (g_po_count >= (int)(sizeof(g_po_rows) / sizeof(g_po_rows[0]))) return NULL;
+  r = &g_po_rows[g_po_count++];
+  memset(r, 0, sizeof(*r));
+  r->kind = kind;
+  r->shown.heading = kind == kPoHeading;
+  return r;
+}
+
+static void PauseOptRebuild(void) {
+  PauseOptRow *r;
+  g_po_count = 0;
+  g_po_stale = false;
+  if ((r = PauseOptPush(kPoHeading))) snprintf(r->shown.label, sizeof(r->shown.label), "SOUND");
+  if ((r = PauseOptPush(kPoVolume))) {
+    snprintf(r->shown.label, sizeof(r->shown.label), "VOLUME");
+    snprintf(r->shown.value, sizeof(r->shown.value), "%d%%", g_config.volume);
+    snprintf(r->shown.help, sizeof(r->shown.help),
+             "Applies at once. You hear it when the game resumes.");
+  }
+#if defined(RECOMP_LAUNCHER) && SNESRECOMP_ENABLE_MODS
+  {
+    const RecompLauncherCModProvider *m = PauseOptMods();
+    enum { kMax = 64 };
+    RecompLauncherCModFeature feats[kMax];
+    int order[kMax], n = 0;
+    char group[96] = "\x01";
+    if (!m) return;
+    for (int i = 0, total = m->feature_count(m->ctx); i < total && n < kMax; i++) {
+      RecompLauncherCModFeature *f = &feats[n];
+      memset(f, 0, sizeof(*f));
+      if (!m->feature_get(m->ctx, i, f)) continue;
+      /* Coverage Capture is a tester's switch (the picker's ADVANCED tab). */
+      if (!strcmp(f->package_id, "snesrecomp.diagnostics.coverage")) continue;
+      if (f->hidden && (!f->enabled || m->hide_hidden_features)) continue;
+      order[n] = n;
+      n++;
+    }
+    /* Stable by group rank. */
+    for (int i = 1; i < n; i++) {
+      int k = order[i], j = i - 1;
+      while (j >= 0 && PauseOptGroupRank(feats[order[j]].group) > PauseOptGroupRank(feats[k].group)) {
+        order[j + 1] = order[j];
+        j--;
+      }
+      order[j + 1] = k;
+    }
+    for (int i = 0; i < n; i++) {
+      const RecompLauncherCModFeature *f = &feats[order[i]];
+      if (strcmp(group, f->group) != 0) {
+        snprintf(group, sizeof(group), "%s", f->group);
+        if ((r = PauseOptPush(kPoHeading)))
+          snprintf(r->shown.label, sizeof(r->shown.label), "%s", f->group[0] ? f->group : "Mods");
+      }
+      if (!(r = PauseOptPush(kPoFeature))) return;
+      r->feature = *f;
+      snprintf(r->shown.label, sizeof(r->shown.label), "%s", f->name[0] ? f->name : f->id);
+      snprintf(r->shown.value, sizeof(r->shown.value), "%s", f->enabled ? "ON" : "OFF");
+      snprintf(r->shown.help, sizeof(r->shown.help), "%s", f->description);
+      if (!f->enabled || !m->feature_option_get) continue;
+      for (int o = 0; o < f->option_count; o++) {
+        RecompLauncherCModOption opt;
+        memset(&opt, 0, sizeof(opt));
+        if (!m->feature_option_get(m->ctx, f->package_id, f->id, o, &opt)) continue;
+        if (!(r = PauseOptPush(kPoOption))) return;
+        r->feature = *f;
+        r->option = opt;
+        r->shown.indent = 1;
+        r->shown.disabled = opt.disabled || opt.type == RECOMP_MOD_OPTION_TEXT;
+        snprintf(r->shown.label, sizeof(r->shown.label), "%s", opt.label[0] ? opt.label : opt.id);
+        snprintf(r->shown.help, sizeof(r->shown.help), "%s", opt.description);
+        if (opt.type == RECOMP_MOD_OPTION_BOOLEAN)
+          snprintf(r->shown.value, sizeof(r->shown.value), "%s",
+                   !strcmp(opt.value, "true") ? "ON" : "OFF");
+        else if (opt.type == RECOMP_MOD_OPTION_CHOICE)
+          PauseOptChoiceText(m, f, &opt, r->shown.value, sizeof(r->shown.value),
+                             r->shown.help, sizeof(r->shown.help));
+        else
+          snprintf(r->shown.value, sizeof(r->shown.value), "%s", opt.value);
+      }
+    }
+  }
+#endif
+}
+
+static int PauseOptCount(void) {
+  if (g_po_stale) PauseOptRebuild();
+  return g_po_count;
+}
+
+static int PauseOptGet(int i, SnesPauseOptionRow *out) {
+  if (g_po_stale) PauseOptRebuild();
+  if (i < 0 || i >= g_po_count) return 0;
+  *out = g_po_rows[i].shown;
+  return 1;
+}
+
+/* The row now showing the same setting as `was` (rows move when a feature
+ * switches on or off, its rivals included), or -1. */
+static int PauseOptFind(const PauseOptRow *was) {
+  for (int i = 0; i < g_po_count; i++) {
+    const PauseOptRow *r = &g_po_rows[i];
+    if (r->kind != was->kind) continue;
+#if defined(RECOMP_LAUNCHER) && SNESRECOMP_ENABLE_MODS
+    if (r->kind == kPoFeature || r->kind == kPoOption) {
+      if (strcmp(r->feature.package_id, was->feature.package_id) != 0 ||
+          strcmp(r->feature.id, was->feature.id) != 0)
+        continue;
+      if (r->kind == kPoOption && strcmp(r->option.id, was->option.id) != 0) continue;
+    }
+#endif
+    if (r->kind == kPoHeading && strcmp(r->shown.label, was->shown.label) != 0) continue;
+    return i;
+  }
+  return -1;
+}
+
+static int PauseOptChange(int i, int delta) {
+  if (g_po_stale) PauseOptRebuild();
+  if (i < 0 || i >= g_po_count) return -1;
+  const PauseOptRow was = g_po_rows[i];
+  const PauseOptRow *r = &was;
+  if (r->kind == kPoVolume) {
+    g_config.volume = IntMin(IntMax(0, g_config.volume + 10 * delta), 100);
+    ApplyVolume();
+    g_volume_changed = true;
+  }
+#if defined(RECOMP_LAUNCHER) && SNESRECOMP_ENABLE_MODS
+  {
+    const RecompLauncherCModProvider *m = PauseOptMods();
+    const RecompLauncherCModFeature *f = &r->feature;
+    const RecompLauncherCModOption *o = &r->option;
+    int ok = 1;
+    if (m && r->kind == kPoFeature) {
+      ok = m->feature_enable(m->ctx, f->package_id, f->id, !f->enabled);
+      g_po_mods_touched = true;
+    } else if (m && r->kind == kPoOption && m->feature_set_option) {
+      char value[RECOMP_LAUNCHER_MOD_VALUE_MAX];
+      value[0] = '\0';
+      if (o->type == RECOMP_MOD_OPTION_BOOLEAN) {
+        snprintf(value, sizeof(value), "%s", !strcmp(o->value, "true") ? "false" : "true");
+      } else if (o->type == RECOMP_MOD_OPTION_CHOICE && o->choice_count > 0 &&
+                 m->feature_choice_get) {
+        int cur = 0;
+        RecompLauncherCModChoice ch;
+        for (int c = 0; c < o->choice_count; c++) {
+          memset(&ch, 0, sizeof(ch));
+          if (m->feature_choice_get(m->ctx, f->package_id, f->id, o->id, c, &ch) &&
+              !strcmp(ch.value, o->value))
+            cur = c;
+        }
+        cur = (cur + delta % o->choice_count + o->choice_count) % o->choice_count;
+        memset(&ch, 0, sizeof(ch));
+        if (m->feature_choice_get(m->ctx, f->package_id, f->id, o->id, cur, &ch))
+          snprintf(value, sizeof(value), "%s", ch.value);
+      } else if (o->type == RECOMP_MOD_OPTION_INTEGER) {
+        long long v = strtoll(o->value, NULL, 10) + (long long)(o->step > 0 ? o->step : 1) * delta;
+        if (o->max_value > o->min_value) {
+          if (v < o->min_value) v = o->min_value;
+          if (v > o->max_value) v = o->max_value;
+        }
+        snprintf(value, sizeof(value), "%lld", v);
+      }
+      if (value[0] && strcmp(value, o->value) != 0) {
+        ok = m->feature_set_option(m->ctx, f->package_id, f->id, o->id, value);
+        g_po_mods_touched = true;
+      }
+    }
+    if (!ok && m) {
+      const char *e = m->last_error ? m->last_error(m->ctx) : NULL;
+      host_report_breadcrumb("pause menu options: change refused: %s", e ? e : "?");
+      snes_pause_menu_set_status("THAT CHANGE WAS REFUSED");
+    } else {
+      snes_pause_menu_set_status(NULL);
+    }
+  }
+#endif
+  PauseOptRebuild();
+  return PauseOptFind(&was);
+}
+
+static const char *PauseOptNote(void) {
+  return g_po_mods_touched ? "MOD CHANGES RESTART THE GAME FROM THIS MOMENT" : NULL;
+}
+
+static const SnesPauseOptionsSource kPauseOptions = {
+  PauseOptCount, PauseOptGet, PauseOptChange, PauseOptNote,
+};
+
+/* Leaving the OPTIONS page: commit the staged mod changes, and restart from
+ * here when state.toml now says something else (only while still running:
+ * a quit keeps the commit for the next start). */
+static void PauseOptionsLeave(const uint8 *mods_before, size_t mods_before_len,
+                              bool *running, const char **exit_reason) {
+  if (!g_po_mods_touched) return;
+  g_po_mods_touched = false;
+  g_po_stale = true;
+#if defined(RECOMP_LAUNCHER) && SNESRECOMP_ENABLE_MODS
+  {
+    const RecompLauncherCModProvider *m = PauseOptMods();
+    size_t after_len = 0;
+    uint8 *after;
+    bool changed;
+    if (!m || !m->commit) return;
+    if (!m->commit(m->ctx, g_rom_path)) {
+      const char *e = m->last_error ? m->last_error(m->ctx) : NULL;
+      host_report_breadcrumb("pause menu options: mods not applied: %s", e ? e : "?");
+      snes_pause_menu_set_status("THOSE MODS CANNOT BE USED TOGETHER");
+      return;
+    }
+    after = g_mod_state_path[0] ? ReadWholeFile(g_mod_state_path, &after_len) : NULL;
+    changed = (after == NULL) != (mods_before == NULL) ||
+              (after && (after_len != mods_before_len ||
+                         memcmp(after, mods_before, after_len) != 0));
+    free(after);
+    host_report_breadcrumb("pause menu options: mods committed (%s)",
+                           changed ? "changed" : "unchanged");
+    if (changed && *running) {
+      /* The restarted process inherits this environment; a self-test must
+       * not replay its visit there and restart again. */
+      const char *prefixes[] = { "SNESRECOMP", g_game->env_prefix };
+      for (size_t p = 0; p < 2; p++) {
+        char name[96];
+        if (!prefixes[p] || !prefixes[p][0]) continue;
+        snprintf(name, sizeof(name), "%s_PAUSE_MENU_SELFTEST", prefixes[p]);
+#ifdef _WIN32
+        _putenv_s(name, "");
+#else
+        unsetenv(name);
+#endif
+      }
+    }
+    if (changed && *running &&
+        !RestartFromHere(g_rom_path, true, "the mods", "pause menu",
+                         "pause menu: restarting to apply the mods", running, exit_reason))
+      snes_pause_menu_set_status("SAVED FOR THE NEXT START");
+  }
+#else
+  (void)mods_before; (void)mods_before_len; (void)running; (void)exit_reason;
 #endif
 }
 
@@ -3171,12 +3478,15 @@ static uint32 PauseSelftestNav(uint32 real) {
 
 /* The pause menu's modal pump. The guest is FROZEN throughout, as in the
  * save-state browser: nothing here calls RtlRunFrame. SAVE and LOAD run the
- * browser's own loop and come back here; OPTIONS runs the in-game launcher
+ * browser's own loop and come back here; OPTIONS opens the page above
  * and comes back; RESUME, a successful load, BACK TO MENU and BACK TO
  * LAUNCHER leave. */
 static void RunPauseMenuLoop(bool *running, const char **exit_reason) {
   unsigned frames = 0;
   bool to_title = false;
+  bool on_options = false;
+  uint8 *mods_before = NULL;
+  size_t mods_before_len = 0;
   host_report_breadcrumb("pause menu OPEN - guest frozen until RESUME "
                          "(pad B or Select+Start, Escape on the keyboard)");
   snes_pause_menu_open();
@@ -3188,6 +3498,15 @@ static void RunPauseMenuLoop(bool *running, const char **exit_reason) {
     if (!*running) break;
     snes_pause_menu_poll_nav(PauseSelftestNav(OverlayNavInputs()), SDL_GetTicks());
     const SnesPauseAction a = snes_pause_menu_take_action();
+    if (on_options && a != SNES_PAUSE_NONE && a != SNES_PAUSE_OPTIONS) {
+      /* Left the page (B, or the chord, which also resumes). */
+      on_options = false;
+      host_report_breadcrumb("pause menu: OPTIONS closed");
+      PauseOptionsLeave(mods_before, mods_before_len, running, exit_reason);
+      free(mods_before);
+      mods_before = NULL;
+      if (!*running) break;
+    }
     switch (a) {
     case SNES_PAUSE_SAVE:
     case SNES_PAUSE_LOAD: {
@@ -3208,10 +3527,13 @@ static void RunPauseMenuLoop(bool *running, const char **exit_reason) {
     }
     case SNES_PAUSE_OPTIONS:
       host_report_breadcrumb("pause menu: OPTIONS");
-      RunInGameLauncher(running, exit_reason);
-      g_overlay_modal = true;
-      SetAudioPaused(true);
-      snes_pause_menu_rearm(OverlayNavInputs());
+      on_options = true;
+      g_po_stale = true;
+      g_po_mods_touched = false;
+      free(mods_before);
+      mods_before_len = 0;
+      mods_before = g_mod_state_path[0] ? ReadWholeFile(g_mod_state_path, &mods_before_len)
+                                        : NULL;
       break;
     case SNES_PAUSE_TITLE:
       to_title = true;
@@ -3230,6 +3552,11 @@ static void RunPauseMenuLoop(bool *running, const char **exit_reason) {
     SDL_Delay(8);
     frames++;
   }
+  if (on_options) {
+    /* The window closed on the page: keep the mods for the next start. */
+    PauseOptionsLeave(mods_before, mods_before_len, running, exit_reason);
+  }
+  free(mods_before);
   if (snes_pause_menu_is_open()) snes_pause_menu_close();
   g_overlay_modal = false;
   ResetAudioTimeline();
@@ -3436,12 +3763,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
                       "rewind", "RewindGesture");
   if (game->pause_menu) {
     const char *rt = getenv("SNESRECOMP_RETURN_TO");
-#if defined(RECOMP_LAUNCHER)
-    const int has_options = game->in_game_launcher;
-#else
-    const int has_options = 0;
-#endif
-    snes_pause_menu_configure(game->display_name, has_options, rt && rt[0]);
+    snes_pause_menu_configure(game->display_name, &kPauseOptions, rt && rt[0]);
   }
   if (game->in_game_launcher)
     PadGestureConfigure(&g_launcher_gesture, g_config.launcher_gesture,
@@ -4656,10 +4978,10 @@ error_reading:;
     relaunch_args[n++] = "--rom";
     relaunch_args[n++] = g_relaunch.rom;
     if (!snesrecomp_host_relaunch(n, relaunch_args)) {
-      host_report_breadcrumb("in-game launcher: restart FAILED; start the game again");
+      host_report_breadcrumb("restart FAILED; start the game again");
       return 1;
     }
-    host_report_breadcrumb("in-game launcher: restarted");
+    host_report_breadcrumb("restarted to apply a setting");
   }
   return g_script_failed ? 3 : 0;
 }

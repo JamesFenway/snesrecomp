@@ -83,7 +83,7 @@ LAUNCHER. It opens on Select+Start pressed together, or `[KeyMap] PauseMenu`
 |---|---|
 | RESUME (also B, Select+Start, Escape) | closes; the guest comes back bit-identical |
 | SAVE / LOAD | the save-state browser opened in that mode (A saves or loads; saving over a used slot takes a second A); B comes back to the menu, a load resumes |
-| OPTIONS | the in-game launcher above; listed only with `in_game_launcher` |
+| OPTIONS | the menu's own page: VOLUME, then every mod feature the launcher's Mods page shows (groups Display, Gameplay, the rest, Cheats/Testing; Coverage Capture left out), with a feature's options under it while it is on. Up/Down pick, Left/Right or A change, B goes back. Volume applies at once; mod changes are committed on leaving the page and, if state.toml changed, the game restarts from that moment (saves/resume.sav, as the in-game launcher does). Controls, ROM and netplay stay in the launcher. |
 | BACK TO MENU | asks first; console reset, then the boot runs uncapped, unrendered and without input until the title's `title_menu_ready()` returns nonzero (a minute at most). Without the hook, a plain reset |
 | BACK TO LAUNCHER | asks first; a normal quit (config and autosave written, exit 0). Reads QUIT GAME unless `SNESRECOMP_RETURN_TO` is set, i.e. a front end started the game |
 
