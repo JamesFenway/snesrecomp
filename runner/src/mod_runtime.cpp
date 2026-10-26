@@ -1,3 +1,4 @@
+#include "mod_version.h"
 #include "mod_runtime.h"
 #include "content_variant.h"
 #include "snes/tier2_capture.h"
@@ -914,7 +915,9 @@ const Package* selected_package(const Runtime& runtime,
             packages->second.find(selection->second.version);
         if (version != packages->second.end()) return &version->second;
     }
-    return &packages->second.rbegin()->second;
+    const auto newest = std::max_element(packages->second.begin(), packages->second.end(),
+        [](const auto& a, const auto& b) { return ModVersion::less(a.first, b.first); });
+    return &newest->second;
 }
 
 PackageSelection& package_selection(Runtime& runtime,
