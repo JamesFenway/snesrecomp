@@ -3646,7 +3646,12 @@ error_reading:;
   if (!window && g_config.output_method == kOutputMethod_OpenGL) {
     fprintf(stderr, "OpenGL window unavailable (%s); using SDL without shaders.\n", SDL_GetError());
     g_renderer_note = "OpenGL is unavailable; using SDL without game filters.";
+#if SNESRECOMP_SDL3
     g_config.output_method = kOutputMethod_SDL;
+#else
+    /* SDL2's accelerated flag excludes software, even when GL is absent. */
+    g_config.output_method = kOutputMethod_SDLSoftware;
+#endif
     g_win_flags &= ~SDL_WINDOW_OPENGL;
     g_renderer_funcs = kSdlRendererFuncs;
     window = snesrecomp_sdl_create_window(g_window_title, window_width, window_height, g_win_flags);
@@ -3668,7 +3673,12 @@ error_reading:;
     SDL_DestroyWindow(window);
     g_window = NULL;
     g_renderer_note = "OpenGL is unavailable; using SDL without game filters.";
+#if SNESRECOMP_SDL3
     g_config.output_method = kOutputMethod_SDL;
+#else
+    /* SDL2's accelerated flag excludes software, even when GL is absent. */
+    g_config.output_method = kOutputMethod_SDLSoftware;
+#endif
     g_win_flags &= ~SDL_WINDOW_OPENGL;
     g_renderer_funcs = kSdlRendererFuncs;
     window = snesrecomp_sdl_create_window(g_window_title, window_width, window_height, g_win_flags);
