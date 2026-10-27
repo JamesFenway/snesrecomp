@@ -217,6 +217,13 @@ typedef struct SnesDesktopHostGame {
    * Read once per present, so a port may change it between frames. Overlays,
    * thumbnails and rewind keep working at 1x from the PPU's own field. */
   int (*present_scale)(void);
+  /* CONTINUE for a front end: the name of the stage the player is in
+   * ("HOTH"), or NULL on the title, in the attract demo or anywhere a
+   * resume makes no sense. Asked once at quit; when it names a stage the
+   * host keeps that moment in saves/continue.sav + continue.bmp +
+   * continue.ini, which a front end restores with --resume-state on a copy.
+   * NULL keeps today's behaviour exactly. */
+  const char *(*continue_label)(void);
 } SnesDesktopHostGame;
 
 /* The whole program. Returns the process exit code. */

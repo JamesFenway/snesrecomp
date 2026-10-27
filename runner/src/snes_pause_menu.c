@@ -38,6 +38,8 @@ static int s_item_count;
 static char s_title[40] = "PAUSED";
 
 static const SnesPauseOptionsSource *s_options;
+static int s_to_launcher;
+static int s_rewind;   /* REWIND listed (snes_pause_menu_set_rewind) */
 
 static int s_open;
 static int s_selected;
@@ -66,25 +68,40 @@ static uint32_t s_chord_guard;
 static uint32_t s_line[SNES_PAUSE_CHORD_FRAMES];
 static int s_line_pos;
 
+static void build_items(void)
+{
+  int n = 0;
+  s_items[n++] = (PmItem){ "RESUME", SNES_PAUSE_RESUME };
+  if (s_rewind) s_items[n++] = (PmItem){ "REWIND", SNES_PAUSE_REWIND };
+  s_items[n++] = (PmItem){ "SAVE", SNES_PAUSE_SAVE };
+  s_items[n++] = (PmItem){ "LOAD", SNES_PAUSE_LOAD };
+  if (s_options) s_items[n++] = (PmItem){ "OPTIONS", SNES_PAUSE_OPTIONS };
+  s_items[n++] = (PmItem){ "BACK TO MENU", SNES_PAUSE_TITLE };
+  s_items[n++] = (PmItem){ s_to_launcher ? "BACK TO LAUNCHER" : "QUIT GAME", SNES_PAUSE_QUIT };
+  s_item_count = n;
+  if (s_selected >= n) s_selected = 0;
+  s_dirty = 1;
+}
+
 void snes_pause_menu_configure(const char *title, const SnesPauseOptionsSource *options,
                                int to_launcher)
 {
-  int n = 0;
   if (title && title[0]) {
     size_t i;
     snprintf(s_title, sizeof(s_title), "%s", title);
     for (i = 0; s_title[i]; i++)
       if (s_title[i] >= 'a' && s_title[i] <= 'z') s_title[i] = (char)(s_title[i] - 32);
   }
-  s_items[n++] = (PmItem){ "RESUME", SNES_PAUSE_RESUME };
-  s_items[n++] = (PmItem){ "SAVE", SNES_PAUSE_SAVE };
-  s_items[n++] = (PmItem){ "LOAD", SNES_PAUSE_LOAD };
   s_options = options && options->count && options->get && options->change ? options : NULL;
-  if (s_options) s_items[n++] = (PmItem){ "OPTIONS", SNES_PAUSE_OPTIONS };
-  s_items[n++] = (PmItem){ "BACK TO MENU", SNES_PAUSE_TITLE };
-  s_items[n++] = (PmItem){ to_launcher ? "BACK TO LAUNCHER" : "QUIT GAME", SNES_PAUSE_QUIT };
-  s_item_count = n;
-  s_dirty = 1;
+  s_to_launcher = to_launcher;
+  build_items();
+}
+
+void snes_pause_menu_set_rewind(int available)
+{
+  if (!!available == s_rewind && s_item_count) return;
+  s_rewind = !!available;
+  build_items();
 }
 
 int snes_pause_menu_is_open(void)

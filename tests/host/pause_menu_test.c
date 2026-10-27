@@ -196,6 +196,24 @@ int main(void) {
     snes_pause_menu_close();
   }
 
+  /* REWIND: listed second while the host says the ring is on; choosing it
+   * keeps the menu open (the host runs the filmstrip and comes back). */
+  snes_pause_menu_set_rewind(1);
+  snes_pause_menu_open();
+  snes_pause_menu_rearm(0);
+  nav(SNES_PAD_DOWN, &t);
+  nav(SNES_PAD_A, &t);
+  CHECK(snes_pause_menu_take_action() == SNES_PAUSE_REWIND);
+  CHECK(snes_pause_menu_is_open());
+  snes_pause_menu_close();
+  snes_pause_menu_set_rewind(0);
+  snes_pause_menu_open();
+  snes_pause_menu_rearm(0);
+  nav(SNES_PAD_DOWN, &t);
+  nav(SNES_PAD_A, &t);
+  CHECK(snes_pause_menu_take_action() == SNES_PAUSE_SAVE);
+  snes_pause_menu_close();
+
   puts(g_fail ? "pause_menu: FAIL" : "pause_menu: ok");
   return g_fail;
 }
