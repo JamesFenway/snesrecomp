@@ -24,6 +24,8 @@ void snesrecomp_opengl_set_viewport(void (*compute)(int, int, int, int,
 
 /* Capture the next fully composited OpenGL frame to screenshots/*.bmp. */
 void OpenGLRenderer_RequestScreenshot(void);
+/* Empty when the requested filter loaded, or no filter was requested. */
+const char *snesrecomp_opengl_shader_note(void);
 
 #ifdef __cplusplus
 }

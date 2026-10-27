@@ -128,15 +128,29 @@ static void LoadShaderFromConfig(void) {
     g_glsl_shader = GlslShader_CreateFromFile(want);
 }
 
+const char *snesrecomp_opengl_shader_note(void) {
+  return g_shader_resolved && g_shader_path[0] && !g_glsl_shader
+      ? "Selected game filter could not load; showing the unfiltered picture." : "";
+}
+
 static bool OpenGLRenderer_Init(SDL_Window *window) {
   g_window = window;
   g_context = SDL_GL_CreateContext(window);
 
-  ApplySwapInterval();
+  if (!g_context) return false;
   ogl_LoadFunctions();
 
-  if (!ogl_IsVersionGEQ(3, 3))
-    Die("You need OpenGL 3.3");
+  if (!ogl_IsVersionGEQ(3, 3)) {
+    fprintf(stderr, "OpenGL 3.3 is unavailable; using the SDL presenter.\n");
+#if SNESRECOMP_SDL3
+    SDL_GL_DestroyContext(g_context);
+#else
+    SDL_GL_DeleteContext(g_context);
+#endif
+    g_context = NULL;
+    return false;
+  }
+  ApplySwapInterval();
 
   if (kDebugFlag) {
     glEnable(GL_DEBUG_OUTPUT);

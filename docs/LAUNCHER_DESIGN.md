@@ -130,3 +130,27 @@ suite through `tests/test_output_resolution.py`.
 - In-tree `runner/src/launcher/launcher_gui.*` and legacy markup/assets
 - `tools/build_launcher_deps.ps1`
 - `lib/recomp-ui` submodule and `runner/recomp_ui.cmake` (games own the UI pin)
+
+## Trilogy game filters and build receipts
+
+Hosts exposing `shader_supported` can stage the shared CC0 presets with
+`snesrecomp_target_shader_presets(target)`. These are gameplay filters; the
+trilogy menu's CRT effect is separate. The desktop host falls back to SDL if
+OpenGL window/context creation fails, preserving the selected renderer and
+filter in config. Missing/broken GLSL presets use the unfiltered GL presenter.
+`display-status.ini` includes the fallback reason alongside the measured output.
+
+`snesrecomp_target_build_info(target)` writes `build/build-info.ini` after the
+target builds, including the executable SHA-256, source revision, and content
+fingerprints of tracked/nonignored source inputs and initialized submodules.
+The Python helper reads no ignored ROMs or generated game code. It also runs
+on a no-op build so an explicit rebuild refreshes metadata. Source exports
+without Git can build and receive an unknown version. The receipt is optional
+and never gates Play. `tools/build_info.py status --repo ... --exe ... --output
+... [--fetch]` checks it without modifying the working tree; the optional fetch
+has a six-second timeout and checks only the branch's configured upstream.
+Offline checks retain cached remote information. The trilogy launcher carries
+an identical helper so it can inspect games built before receipts existed.
+
+ROM-free coverage: `python3 tools/test_build_info.py` and the actual GL
+presenter test in `runner/tests/shader_presets/README.md`.
