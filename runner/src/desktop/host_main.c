@@ -1795,9 +1795,12 @@ static void PauseMenuKeyDown(int key, int repeat) {
  * reaches HandleInput so a direction held across the close does not stick
  * in the guest afterwards; and every controller event is handled exactly as
  * the main loop handles it. */
+static void AwayNoteOverlayEvent(const SDL_Event *e);
+
 static void PumpOverlayEvents(bool *running, void (*key_down)(int key, int repeat)) {
   SDL_Event event;
   while (SDL_PollEvent(&event)) {
+    AwayNoteOverlayEvent(&event);
     if (HandleDeviceEvent(&event))
       continue;
     switch (event.type) {
@@ -2200,7 +2203,9 @@ static void RewindKeyDown(int key, int repeat) {
  * ports: Left/Right scrub (hold to keep scrubbing), Enter or Space commits,
  * Escape cancels, and the pad mirrors them. */
 static void RunRewindLoop(bool *running) {
-  uint32 prev_pad = 0;
+  /* Buttons already down count as held: the A that picked REWIND in the
+   * pause menu must be released before it can commit a snapshot. */
+  uint32 prev_pad = OverlayNavInputs();
   uint32 held_dir = 0;
   uint32 held_since = 0, last_repeat = 0;
   unsigned frames = 0;
@@ -3696,6 +3701,14 @@ static void AwayNoteEvent(const SDL_Event *e) {
     g_away_had_focus = false;   /* once per absence */
     g_away_reason = "the window lost focus";
   }
+}
+
+/* An overlay is already up (the game is frozen): keep the focus record in
+ * step, so a later absence still pauses, but don't queue a pause for it. */
+static void AwayNoteOverlayEvent(const SDL_Event *e) {
+  const char *pending = g_away_reason;
+  AwayNoteEvent(e);
+  g_away_reason = pending;
 }
 
 /* Seconds the machine has spent asleep since boot (0 where unknown). */
