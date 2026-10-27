@@ -68,6 +68,9 @@ enum {
 typedef struct Config {
   int window_width;
   int window_height;
+  /* Output presets are independent of the legacy window-size/scale keys. */
+  int output_width, output_height;
+  uint8 display_mode;  /* kSnesOutput_*; Auto follows Fullscreen */
   bool new_renderer;
   bool ignore_aspect_ratio;
   uint8 display_aspect;
