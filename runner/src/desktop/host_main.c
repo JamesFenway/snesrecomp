@@ -1045,6 +1045,7 @@ static GamepadInfo *GetGamepadInfo(SDL_JoystickID id) {
 /* Only actual SDL drawable dimensions are reported. The saved request stays
  * unchanged after fallback, resize, display migration or a Steam resolution cap. */
 static SnesOutputResult g_output_result;
+static const char *g_renderer_note = "";
 
 static void UpdateOutputStatus(void) {
   int width = 0, height = 0;
@@ -1057,6 +1058,15 @@ static void UpdateOutputStatus(void) {
       snprintf(note, sizeof(note), "Borderless uses the desktop resolution. Select Fullscreen to request a resolution. In Steam Game Mode, check the shortcut's Game Resolution setting.");
     else if (width != g_config.output_width || height != g_config.output_height)
       snprintf(note, sizeof(note), "The display or window manager limited the requested resolution. In Steam Game Mode, check the shortcut's Game Resolution setting.");
+  }
+  const char *renderer_note = g_renderer_note;
+#ifndef __ANDROID__
+  if (g_config.output_method == kOutputMethod_OpenGL)
+    renderer_note = snesrecomp_opengl_shader_note();
+#endif
+  if (renderer_note[0]) {
+    size_t used = strlen(note);
+    snprintf(note + used, sizeof(note) - used, "%s%s", used ? " " : "", renderer_note);
   }
   const char *mode = g_output_result.fullscreen == 2 ? "fullscreen" :
                      g_output_result.fullscreen ? "borderless" : "windowed";
@@ -4230,6 +4240,16 @@ error_reading:;
   /* SDL3 dropped the x/y arguments from SDL_CreateWindow. */
   SDL_Window *window = snesrecomp_sdl_create_window(
       g_window_title, window_width, window_height, g_win_flags);
+  /* A selected shader must not prevent play on a machine without GL. The
+   * saved renderer/filter stay selected for the next compatible launch. */
+  if (!window && g_config.output_method == kOutputMethod_OpenGL) {
+    fprintf(stderr, "OpenGL window unavailable (%s); using SDL without shaders.\n", SDL_GetError());
+    g_renderer_note = "OpenGL is unavailable; using SDL without game filters.";
+    g_config.output_method = kOutputMethod_SDL;
+    g_win_flags &= ~SDL_WINDOW_OPENGL;
+    g_renderer_funcs = kSdlRendererFuncs;
+    window = snesrecomp_sdl_create_window(g_window_title, window_width, window_height, g_win_flags);
+  }
   if(window == NULL) {
     host_report_breadcrumb("SDL_CreateWindow FAILED: %s", SDL_GetError());
     printf("Failed to create window: %s\n", SDL_GetError());
@@ -4241,11 +4261,28 @@ error_reading:;
   host_report_breadcrumb("window created: %dx%d flags=0x%x",
                          window_width, window_height, g_win_flags);
 
-  if (!g_renderer_funcs.Initialize(window)) {
-    host_report_breadcrumb("renderer init FAILED (output_method=%d)",
-                           g_config.output_method);
+  bool renderer_ready = g_renderer_funcs.Initialize(window);
+  if (!renderer_ready && g_config.output_method == kOutputMethod_OpenGL) {
+    fprintf(stderr, "OpenGL initialization failed; using SDL without shaders.\n");
+    SDL_DestroyWindow(window);
+    g_window = NULL;
+    g_renderer_note = "OpenGL is unavailable; using SDL without game filters.";
+    g_config.output_method = kOutputMethod_SDL;
+    g_win_flags &= ~SDL_WINDOW_OPENGL;
+    g_renderer_funcs = kSdlRendererFuncs;
+    window = snesrecomp_sdl_create_window(g_window_title, window_width, window_height, g_win_flags);
+    if (window) {
+      g_window = window;
+      ApplyOutputSettings();
+      SDL_SetWindowHitTest(window, HitTestCallback, NULL);
+      renderer_ready = g_renderer_funcs.Initialize(window);
+    }
+  }
+  if (!renderer_ready) {
+    host_report_breadcrumb("renderer init FAILED (output_method=%d)", g_config.output_method);
     return 1;
   }
+  UpdateOutputStatus();
   host_report_breadcrumb("renderer initialized: %s",
       g_config.output_method == kOutputMethod_OpenGL ? "opengl" :
       g_config.output_method == kOutputMethod_SDLSoftware ? "sdl-software" : "sdl");

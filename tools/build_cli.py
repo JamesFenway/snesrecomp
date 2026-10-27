@@ -85,6 +85,7 @@ def main() -> int:
 
     add_data = [
         (ROOT / "runner", "framework/runner"),
+        (ROOT / "tools" / "build_info.py", "framework/tools"),
         (ROOT / "recompiler", "recompiler"),
         (ROOT / "tools" / "v2_emit.py", "tools"),
         (ROOT / "tools" / "v2_analyze.py", "tools"),

@@ -1243,3 +1243,15 @@ include(${SNESRECOMP_RUNNER_ROOT}/recomp_net.cmake)
 # Dear ImGui pre-boot launcher is NOT vendored here. Games that need it add
 # RetroPortingToolKit/recomp-ui as a repo-root submodule and call recomp_target_launcher_ui()
 # themselves (see docs/LAUNCHER_DESIGN.md).
+
+# Record the actual linked executable and the source inputs it was built from.
+# The launcher reads this receipt; it never treats it as permission to block Play.
+function(snesrecomp_target_build_info target)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_custom_target(${target}_build_info ALL
+        COMMAND "${Python3_EXECUTABLE}" "${SNESRECOMP_RUNNER_ROOT}/../tools/build_info.py"
+            write --repo "${CMAKE_SOURCE_DIR}" --exe "$<TARGET_FILE:${target}>"
+            --output "$<TARGET_FILE_DIR:${target}>/build-info.ini"
+        DEPENDS ${target}
+        VERBATIM)
+endfunction()
