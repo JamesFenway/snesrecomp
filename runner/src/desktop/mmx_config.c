@@ -3,6 +3,7 @@
 // See THIRD_PARTY_ATTRIBUTION.md; this project's own work here is PolyForm
 // Noncommercial, the retained upstream material stays MIT.
 #include "config.h"
+#include "output_resolution.h"
 #include "types.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -522,6 +523,10 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
     } else if (StringEqualsNoCase(key, "Renderer")) {
       snprintf(g_config.renderer, sizeof(g_config.renderer), "%s", value);
       return true;
+    } else if (StringEqualsNoCase(key, "DisplayMode")) {
+      return SnesOutput_ParseMode(value, &g_config.display_mode);
+    } else if (StringEqualsNoCase(key, "OutputResolution")) {
+      return SnesOutput_ParseSize(value, &g_config.output_width, &g_config.output_height);
     } else if (StringEqualsNoCase(key, "WindowSize")) {
       char *s;
       if (StringEqualsNoCase(value, "Auto")){
@@ -644,6 +649,8 @@ static bool ParseOneConfigFile(const char *filename, int depth) {
 }
 
 void ParseConfigFile(const char *filename) {
+  g_config.display_mode = kSnesOutput_Auto;
+  g_config.output_width = g_config.output_height = 0;
   g_config.enable_audio = true;
   g_config.vsync = kSnesVSync_On;
   g_config.coverage_capture = -1;
@@ -874,6 +881,8 @@ void WriteConfigFile(const char *filename) {
 
   CfgKV kvs[] = {
     { "Graphics", "WindowScale" },
+    { "Graphics", "DisplayMode" },
+    { "Graphics", "OutputResolution" },
     { "Graphics", "Fullscreen" },
     { "Graphics", "DisplayAspect" },
     { "Graphics", "OutputMethod" },
@@ -905,6 +914,11 @@ void WriteConfigFile(const char *filename) {
   const int N = (int)countof(kvs);
   CfgSet(kvs, N, "Graphics", "WindowScale", "%d",
          g_config.window_scale ? g_config.window_scale : 3);
+  CfgSet(kvs, N, "Graphics", "DisplayMode", "%s", SnesOutput_ModeName(g_config.display_mode));
+  if (g_config.output_width > 0 && g_config.output_height > 0)
+    CfgSet(kvs, N, "Graphics", "OutputResolution", "%dx%d", g_config.output_width, g_config.output_height);
+  else
+    CfgSet(kvs, N, "Graphics", "OutputResolution", "%s", "Auto");
   CfgSet(kvs, N, "Graphics", "Fullscreen", "%d", (int)g_config.fullscreen);
   CfgSet(kvs, N, "Graphics", "DisplayAspect", "%s",
          SnesDisplayAspect_Name(g_config.display_aspect));

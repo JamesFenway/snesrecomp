@@ -59,6 +59,7 @@
 #include "state_dump.h"
 #include "config.h"
 #include "display_aspect.h"
+#include "output_window.h"
 #include "crc32.h"
 #include "util.h"
 #include "spc_player.h"
@@ -1030,6 +1031,71 @@ void NORETURN Die(const char *error) {
 static GamepadInfo *GetGamepadInfo(SDL_JoystickID id) {
   return (g_gamepad[0].joystick_id == id) ? &g_gamepad[0] :
     (g_gamepad[1].joystick_id == id) ? &g_gamepad[1] : NULL;
+}
+
+/* Only actual SDL drawable dimensions are reported. The saved request stays
+ * unchanged after fallback, resize, display migration or a Steam resolution cap. */
+static SnesOutputResult g_output_result;
+
+static void UpdateOutputStatus(void) {
+  int width = 0, height = 0;
+  SnesOutput_PixelSize(g_window, &width, &height);
+  if (width <= 0 || height <= 0) return;
+  char note[512];
+  snprintf(note, sizeof(note), "%s", g_output_result.note);
+  if (!note[0] && g_config.output_width > 0) {
+    if (g_output_result.fullscreen == 1)
+      snprintf(note, sizeof(note), "Borderless uses the desktop resolution. Select Fullscreen to request a resolution. In Steam Game Mode, check the shortcut's Game Resolution setting.");
+    else if (width != g_config.output_width || height != g_config.output_height)
+      snprintf(note, sizeof(note), "The display or window manager limited the requested resolution. In Steam Game Mode, check the shortcut's Game Resolution setting.");
+  }
+  const char *mode = g_output_result.fullscreen == 2 ? "fullscreen" :
+                     g_output_result.fullscreen ? "borderless" : "windowed";
+  char text[1024];
+  snprintf(text, sizeof(text), "[Output]\nWidth = %d\nHeight = %d\nMode = %s\nRequested = %dx%d\nNote = %s\n",
+      width, height, mode, g_config.output_width, g_config.output_height, note);
+  static char previous[sizeof(text)];
+  if (!strcmp(text, previous)) return;
+  /* A custom --config keeps its status beside it, just like the normal file.
+   * Unique temporary files also make parallel headless runs harmless. */
+  char path[4096], tmp[4140];
+  const char *config = g_active_config_file ? g_active_config_file : "config.ini";
+  const char *slash = strrchr(config, '/');
+#ifdef _WIN32
+  const char *backslash = strrchr(config, '\\');
+  if (backslash && (!slash || backslash > slash)) slash = backslash;
+#endif
+  snprintf(path, sizeof(path), "%.*sdisplay-status.ini", slash ? (int)(slash - config + 1) : 0, config);
+#ifdef _WIN32
+  snprintf(tmp, sizeof(tmp), "%s.%lu.tmp", path, (unsigned long)GetCurrentProcessId());
+#else
+  snprintf(tmp, sizeof(tmp), "%s.%ld.tmp", path, (long)getpid());
+#endif
+  FILE *f = fopen(tmp, "w");
+  if (f) {
+    bool ok = fputs(text, f) >= 0;
+    ok = fclose(f) == 0 && ok;
+#ifdef _WIN32
+    if (!ok || !MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) remove(tmp);
+#else
+    if (!ok || rename(tmp, path) != 0) remove(tmp);
+#endif
+  }
+  /* Status is diagnostic; a read-only install must not spam the game log. */
+  snprintf(previous, sizeof(previous), "%s", text);
+  fprintf(stderr, "[display] requested=%dx%d actual=%dx%d mode=%s%s%s\n",
+      g_config.output_width, g_config.output_height, width, height, mode, note[0] ? ": " : "", note);
+}
+
+static void ApplyOutputSettings(void) {
+  int fullscreen = SnesOutput_Fullscreen(g_config.display_mode, g_config.fullscreen);
+  g_output_result = SnesOutput_Apply(g_window, fullscreen,
+      g_config.output_width, g_config.output_height);
+  const uint32 mask = SNESRECOMP_SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_FULLSCREEN;
+  g_win_flags = (g_win_flags & ~mask) | (SDL_GetWindowFlags(g_window) & mask);
+  g_cursor = g_output_result.fullscreen == 0;
+  snesrecomp_sdl_show_cursor(g_cursor);
+  UpdateOutputStatus();
 }
 
 void ChangeWindowScale(int scale_step) {
@@ -2599,7 +2665,7 @@ static void LauncherSeed(RecompLauncherCSettings *ls, RecompLauncherCGameInfo *g
   memset(ls, 0, sizeof(*ls));
   ls->output_method = g_config.output_method;
   ls->window_scale  = g_config.window_scale ? g_config.window_scale : 2;
-  ls->fullscreen    = g_config.fullscreen;
+  ls->fullscreen    = SnesOutput_Fullscreen(g_config.display_mode, g_config.fullscreen);
   ls->ignore_aspect = g_config.ignore_aspect_ratio;
   ls->linear_filter = g_config.linear_filtering;
   ls->aspect_index = SnesDisplayAspect_Clamp(g_config.display_aspect);
@@ -2734,6 +2800,9 @@ static void LauncherCommit(const RecompLauncherCSettings *ls, const char *config
   const SnesDesktopHostGame *game = g_game;
   g_config.output_method       = (uint8)ls->output_method;
   g_config.window_scale        = (uint8)ls->window_scale;
+  if (ls->fullscreen != SnesOutput_Fullscreen(g_config.display_mode, g_config.fullscreen))
+    g_config.display_mode = ls->fullscreen == 2 ? kSnesOutput_Fullscreen :
+        ls->fullscreen ? kSnesOutput_Borderless : kSnesOutput_Windowed;
   g_config.fullscreen          = (uint8)ls->fullscreen;
   g_config.ignore_aspect_ratio = ls->ignore_aspect != 0;
   g_config.linear_filtering    = ls->linear_filter != 0;
@@ -2790,21 +2859,19 @@ static void LauncherCommit(const RecompLauncherCSettings *ls, const char *config
  * rest (renderer, audio rate, mods, ROM) never reach here: they restart. */
 static void ApplyLiveSettings(const Config *before) {
   const uint32 fs_mask = SNESRECOMP_SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_FULLSCREEN;
-  if (g_config.fullscreen != before->fullscreen) {
-    uint32 want = g_config.fullscreen == 2 ? SDL_WINDOW_FULLSCREEN
-                : g_config.fullscreen      ? SNESRECOMP_SDL_WINDOW_FULLSCREEN_DESKTOP : 0;
-    g_win_flags = (g_win_flags & ~fs_mask) | want;
-    SDL_SetWindowFullscreen(g_window, want);
-    g_cursor = want == 0;
-    snesrecomp_sdl_show_cursor(g_cursor);
-  }
+  if (g_config.fullscreen != before->fullscreen ||
+      g_config.display_mode != before->display_mode ||
+      g_config.output_width != before->output_width || g_config.output_height != before->output_height)
+    ApplyOutputSettings();
   /* The window follows the scale and, through WindowBaseWidth, the pixel
    * aspect -- but only a window that is a window, and only one the player
    * has not sized explicitly in config.ini. */
-  bool custom_size = g_config.window_width != 0 && g_config.window_height != 0;
+  bool custom_size = (g_config.output_width > 0 && g_config.output_height > 0) ||
+                     (g_config.window_width != 0 && g_config.window_height != 0);
   if (!custom_size && !(g_win_flags & fs_mask) &&
       (g_config.window_scale != before->window_scale ||
        g_config.display_aspect != before->display_aspect ||
+       g_config.display_mode != before->display_mode ||
        g_config.fullscreen != before->fullscreen)) {
     if (g_config.window_scale)
       g_current_window_scale = IntMin(g_config.window_scale, kMaxWindowScale);
@@ -3409,11 +3476,8 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
   g_ppu_render_flags = g_config.new_renderer * kPpuRenderFlags_NewRenderer |
     g_config.no_sprite_limits * kPpuRenderFlags_NoSpriteLimits;
 
-  if (g_config.fullscreen == 1)
-    g_win_flags ^= SNESRECOMP_SDL_WINDOW_FULLSCREEN_DESKTOP;
-  else if (g_config.fullscreen == 2)
-    g_win_flags ^= SDL_WINDOW_FULLSCREEN;
-
+  /* Create a window first, then choose an exact SDL display mode. In SDL3
+   * the fullscreen window flag alone cannot distinguish exclusive/borderless. */
   // Window scale (1=100%, 2=200%, 3=300%, etc.)
   g_current_window_scale = (g_config.window_scale == 0) ? 2 : IntMin(g_config.window_scale, kMaxWindowScale);
 
@@ -3573,6 +3637,7 @@ error_reading:;
     return 1;
   }
   g_window = window;
+  ApplyOutputSettings();
   SDL_SetWindowHitTest(window, HitTestCallback, NULL);
   host_report_breadcrumb("window created: %dx%d flags=0x%x",
                          window_width, window_height, g_win_flags);
@@ -3960,6 +4025,7 @@ error_reading:;
     bool paced_custom = PresentationDecoupled() && paced_realtime;
     double video_now = MonotonicSeconds();
     if (video_now >= next_display_check) {
+      UpdateOutputStatus();
       double hz = WantedPresentationHz(DisplayRefresh());
       if (hz <= 0) hz = g_simulation_hz;
       if (hz != presentation_hz) {
@@ -4409,18 +4475,11 @@ static void HandleCommand(uint32 j, bool pressed) {
   } else {
     switch (j) {
     case kKeys_Fullscreen:
-      g_win_flags ^= SNESRECOMP_SDL_WINDOW_FULLSCREEN_DESKTOP;
-      SDL_SetWindowFullscreen(g_window, g_win_flags & SNESRECOMP_SDL_WINDOW_FULLSCREEN_DESKTOP);
-      g_cursor = !g_cursor;
-      snesrecomp_sdl_show_cursor(g_cursor);
-      /* Keep the config in step with the window: the launcher reads
-       * g_config.fullscreen to seed its Display row, and the shutdown write
-       * persists it. Without this, toggling fullscreen in-game and quitting
-       * put the launcher back on "Windowed" next run -- the same forgetting
-       * the launcher's own row suffered from. Exclusive (2) stays exclusive:
-       * this key only moves between windowed and borderless. */
-      g_config.fullscreen =
-          (g_win_flags & SNESRECOMP_SDL_WINDOW_FULLSCREEN_DESKTOP) ? 1 : 0;
+      /* Leaving exclusive fullscreen must clear its SDL display mode too.
+       * Keep the explicit preference in step with changes made in game. */
+      g_config.fullscreen = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) ? 0 : 1;
+      g_config.display_mode = g_config.fullscreen ? kSnesOutput_Borderless : kSnesOutput_Windowed;
+      ApplyOutputSettings();
       g_fullscreen_changed = true;
       break;
     case kKeys_Reset:
@@ -4727,6 +4786,9 @@ static const char kDefaultConfigIniContent[] =
   "[Graphics]\n"
   "# Window size (Auto or WidthxHeight)\n"
   "WindowSize = Auto\n"
+  "# Per-game output presets; Auto keeps WindowSize/WindowScale and Fullscreen\n"
+  "DisplayMode = auto\n"
+  "OutputResolution = Auto\n"
   "\n"
   "# Fullscreen mode (0=windowed, 1=desktop fullscreen, 2=fullscreen w/mode change)\n"
   "Fullscreen = 0\n"
