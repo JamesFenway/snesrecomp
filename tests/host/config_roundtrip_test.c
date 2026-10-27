@@ -14,6 +14,7 @@
  */
 #include "config.h"
 #include "display_aspect.h"
+#include "output_resolution.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -271,7 +272,38 @@ static void test_video_settings_roundtrip(void) {
   CHECK(!g_config.shader, "cleared shader did not survive");
 }
 
+static void test_output_resolution(void) {
+  write_file("[Graphics]\nDisplayMode = Fullscreen\nOutputResolution = 3840x2160\nWindowSize = 900x700\nWindowScale = 4\n# keep this\n");
+  ParseConfigFile(kPath);
+  CHECK(g_config.display_mode == kSnesOutput_Fullscreen, "explicit mode not parsed");
+  CHECK(g_config.output_width == 3840 && g_config.output_height == 2160, "4K not parsed");
+  WriteConfigFile(kPath);
+  ParseConfigFile(kPath);
+  CHECK(g_config.display_mode == kSnesOutput_Fullscreen && g_config.output_width == 3840 &&
+      g_config.output_height == 2160, "output settings did not round trip");
+  CHECK(strstr(read_file(), "WindowSize = 900x700") && strstr(read_file(), "# keep this"),
+      "legacy window dimensions or comments were changed");
+  g_config.display_mode = kSnesOutput_Windowed;
+  g_config.output_width = 1920; g_config.output_height = 1080;
+  WriteConfigFile(kPath); ParseConfigFile(kPath);
+  CHECK(g_config.display_mode == kSnesOutput_Windowed && g_config.output_width == 1920 &&
+      g_config.output_height == 1080, "1080p window did not round trip");
+  g_config.display_mode = kSnesOutput_Auto;
+  g_config.output_width = g_config.output_height = 0;
+  WriteConfigFile(kPath); ParseConfigFile(kPath);
+  CHECK(g_config.display_mode == 0 && !g_config.output_width && !g_config.output_height,
+      "Auto retained an explicit output size");
+  write_file("[Graphics]\nOutputResolution = 999999999999999999999x2160\nDisplayMode = nonsense\n");
+  ParseConfigFile(kPath);
+  CHECK(!g_config.output_width && !g_config.output_height && !g_config.display_mode,
+      "invalid output preference was not safely defaulted");
+  write_file(kBaseIni); ParseConfigFile(kPath);
+  CHECK(!g_config.display_mode && !g_config.output_width && !g_config.output_height,
+      "old config inherited a stale output preference");
+}
+
 int main(void) {
+  test_output_resolution();
   test_fullscreen_roundtrip();
   test_player_sources_roundtrip();
   test_vsync_tristate();

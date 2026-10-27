@@ -71,6 +71,46 @@ opens it at that frame, recomp-ui's `LNG_SMOKE_FRAMES=<n>` closes it after n
 frames (RESUME), and `SNESRECOMP_INGAME_LAUNCHER_SELFTEST_RESTART=1` takes the
 restart path. The guest must come back bit-identical.
 
+## Per-game output resolution
+
+The shared desktop host reads `[Graphics] DisplayMode = auto | windowed |
+borderless | fullscreen` and `OutputResolution = Auto | WidthxHeight`.
+These control output pixels, independently of the SNES framebuffer or any
+internal Mode 7 enhancements. Auto is the default: legacy `Fullscreen`,
+`WindowSize` and `WindowScale` retain their meaning. An explicit resolution
+takes priority over window size/scale; an explicit display mode takes priority
+over `Fullscreen`. Both new preferences round-trip through `WriteConfigFile`.
+
+Windowed presets account for the window's actual pixel density. Borderless
+always follows the desktop. Fullscreen enumerates exact pixel dimensions on
+the window's display, preferring the desktop refresh rate; Auto requests the
+desktop dimensions. Unsupported or rejected exclusive modes fall back to
+desktop fullscreen, then to a window if fullscreen itself fails. Fallbacks
+never overwrite preferences, and modes are enumerated again on the next
+launch so undocking does not leave a stale SDL mode pointer.
+
+`output_resolution.h` owns parsing/selection policy; `output_window.h` owns
+the SDL2/SDL3 application boundary. Fullscreen hotkeys and in-game launcher
+edits use the same path and clear exclusive display modes when leaving them.
+The game launcher retains its existing display/window-scale controls;
+the trilogy launcher exposes the output presets. A changed display mode in
+the game launcher updates the explicit preference too.
+
+The host writes `display-status.ini` beside the active config with measured
+`[Output] Width`, `Height`, effective `Mode`, and a `Note` explaining fallback
+or compositor limits. It updates after window creation and on size changes;
+the trilogy launcher displays this as LAST OUTPUT, explicitly for the last
+run. Steam Game Mode can expose only the shortcut's configured Game Resolution;
+requesting 4K cannot bypass that limit. Borderless does not change a monitor's
+physical resolution.
+
+ROM-free checks: `cmake -S tests/host/output_resolution -B build-output &&
+cmake --build build-output && ctest --test-dir build-output --output-on-failure`.
+With SDL3 installed, this also measures real offscreen drawable sizes from
+720p through 4K and runs the config round-trip tests. Without SDL, the parser,
+refresh-rate, density and display-failure tests still run. Pytest invokes this
+suite through `tests/test_output_resolution.py`.
+
 ## In-game pause menu (opt-in)
 
 `SnesDesktopHostGame.pause_menu = 1` adds a pause menu over the frozen game
