@@ -3906,6 +3906,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
     return 2;
   }
   g_game = game;
+  snesrecomp_host_relaunch_init();
   if (game->window_title && game->window_title[0])
     snprintf(g_window_title, sizeof(g_window_title), "%s", game->window_title);
   else

@@ -15,6 +15,11 @@
 #  include <windows.h>
 #elif !defined(__ANDROID__)
 #  include <spawn.h>
+#  if defined(__APPLE__)
+#    include <unistd.h>
+#    include <errno.h>
+#    include <stdlib.h>
+#  endif
 extern char **environ;
 #endif
 
@@ -45,6 +50,27 @@ static int AppendQuoted(char *out, size_t cap, size_t *len, const char *arg) {
   out[n] = '\0';
   *len = n;
   return 1;
+}
+#endif
+
+#if defined(__APPLE__)
+enum { kExecMaxArgs = 32 };
+static int s_exit_hook_installed, s_exec_pending;
+static char s_exec_strings[16384];
+static char *s_exec_argv[kExecMaxArgs + 2];
+
+/* Registered first, so it runs after every other atexit handler. */
+static void ExecAtExit(void) {
+  if (!s_exec_pending) return;
+  fflush(NULL);
+  execv(s_exec_argv[0], s_exec_argv);
+  fprintf(stderr, "[relaunch] execv(%s) failed: %s\n", s_exec_argv[0], strerror(errno));
+  fflush(stderr);
+  _exit(1);
+}
+
+void snesrecomp_host_relaunch_init(void) {
+  if (!s_exit_hook_installed && atexit(ExecAtExit) == 0) s_exit_hook_installed = 1;
 }
 #endif
 
@@ -88,6 +114,30 @@ int snesrecomp_host_relaunch(int argc, const char *const *args) {
   argv[0] = exe;
   for (int i = 0; i < argc; ++i) argv[i + 1] = (char *)args[i];
   argv[argc + 1] = NULL;
+#if defined(__APPLE__)
+  // Keep the picker's child PID, process group and exit status across a
+  // settings restart. The host has already closed SDL/audio and saved state.
+  // With the exit hook installed, the exec waits for the normal exit so the
+  // other atexit handlers (coverage manifest, capture journal, run report)
+  // and stdio flushes still run first.
+  if (s_exit_hook_installed) {
+    size_t used = 0;
+    for (int i = 0; i <= argc; ++i) {
+      const char *src = i == 0 ? exe : args[i - 1];
+      size_t len = strlen(src) + 1;
+      if (used + len > sizeof(s_exec_strings)) return 0;
+      memcpy(s_exec_strings + used, src, len);
+      s_exec_argv[i] = s_exec_strings + used;
+      used += len;
+    }
+    s_exec_argv[argc + 1] = NULL;
+    s_exec_pending = 1;
+    return 1;
+  }
+  execv(exe, argv);
+  fprintf(stderr, "[relaunch] execv(%s) failed: %s\n", exe, strerror(errno));
+  return 0;
+#else
   pid_t pid = 0;
   int rc = posix_spawn(&pid, exe, NULL, NULL, argv, environ);
   if (rc != 0) {
@@ -95,6 +145,7 @@ int snesrecomp_host_relaunch(int argc, const char *const *args) {
     return 0;
   }
   return 1;
+#endif
 #endif
 #endif
 }
