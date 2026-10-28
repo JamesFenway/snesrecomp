@@ -439,6 +439,9 @@ static struct {
     InterpPreOpcodeHook hook;
 } s_pre_opcode_hooks[kInterpPreOpcodeHookSlots];
 static int s_pre_opcode_hook_count;
+/* One bit per low-16-bit PC that has a hook: the per-instruction check is a
+ * single bit test instead of a walk over every registration. */
+static uint8_t s_pre_opcode_hook_pcs[0x10000 / 8];
 static int s_pre_opcode_redirect_valid;
 static uint32_t s_pre_opcode_redirect_pc24;
 
@@ -449,6 +452,7 @@ bool interp_bridge_add_pre_opcode_hook(uint32_t pc24, InterpPreOpcodeHook hook) 
         if (s_pre_opcode_hooks[i].pc24==key && s_pre_opcode_hooks[i].hook==hook)
             return true;
     if (s_pre_opcode_hook_count>=kInterpPreOpcodeHookSlots) return false;
+    s_pre_opcode_hook_pcs[(key & 0xFFFFu) >> 3] |= (uint8_t)(1u << (key & 7u));
     s_pre_opcode_hooks[s_pre_opcode_hook_count].pc24=key;
     s_pre_opcode_hooks[s_pre_opcode_hook_count].hook=hook;
     ++s_pre_opcode_hook_count;
@@ -459,6 +463,7 @@ void interp_bridge_set_pre_opcode_hook(uint32_t pc24,
                                        InterpPreOpcodeHook hook) {
     if (!hook) {
         s_pre_opcode_hook_count = 0;
+        memset(s_pre_opcode_hook_pcs, 0, sizeof s_pre_opcode_hook_pcs);
         return;
     }
     const uint32_t key = pc24 & 0x7FFFFFu;
@@ -469,6 +474,7 @@ void interp_bridge_set_pre_opcode_hook(uint32_t pc24,
         }
     }
     if (s_pre_opcode_hook_count < kInterpPreOpcodeHookSlots) {
+        s_pre_opcode_hook_pcs[(key & 0xFFFFu) >> 3] |= (uint8_t)(1u << (key & 7u));
         s_pre_opcode_hooks[s_pre_opcode_hook_count].pc24 = key;
         s_pre_opcode_hooks[s_pre_opcode_hook_count].hook = hook;
         s_pre_opcode_hook_count++;
@@ -2044,7 +2050,9 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
             }
             qring[steps & 63]=now;
         }
-        if (s_pre_opcode_hook_count > 0) {
+        if (s_pre_opcode_hook_count > 0 &&
+            (s_pre_opcode_hook_pcs[(pc_before & 0xFFFFu) >> 3] >>
+             (pc_before & 7u) & 1u)) {
             const uint32_t key = pc_before & 0x7FFFFFu;
             bool redirected = false;
             for (int hi = 0; hi < s_pre_opcode_hook_count; hi++) {
