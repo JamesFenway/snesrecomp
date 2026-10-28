@@ -10,5 +10,6 @@
 /* Spawn the running executable with `args` (argv[1..], not including the
  * program name), detached from this process. On an AppImage this starts the
  * .AppImage file rather than the binary inside its read-only mount. Returns 1
- * when the new process started. */
+ * when the new process started. On macOS a successful relaunch replaces the
+ * current process and does not return, retaining its PID and exit status. */
 int snesrecomp_host_relaunch(int argc, const char *const *args);

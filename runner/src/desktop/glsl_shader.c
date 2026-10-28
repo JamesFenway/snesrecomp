@@ -232,8 +232,13 @@ static bool GlslPass_Compile(GlslPass *p, uint type, const uint8 *data, size_t s
   size_t skip = 0;
 
   if (size < 8 || memcmp(data, "#version", 8) != 0) {
+#ifdef __APPLE__
+    strings[0] = "#version 410\n";
+    lengths[0] = sizeof("#version 410\n") - 1;
+#else
     strings[0] = "#version 330\n";
     lengths[0] = sizeof("#version 330\n") - 1;
+#endif
   } else {
     while (skip < size && data[skip++] != '\n') {}
     strings[0] = (char*)data;

@@ -15,6 +15,10 @@
 #  include <windows.h>
 #elif !defined(__ANDROID__)
 #  include <spawn.h>
+#  if defined(__APPLE__)
+#    include <unistd.h>
+#    include <errno.h>
+#  endif
 extern char **environ;
 #endif
 
@@ -88,6 +92,13 @@ int snesrecomp_host_relaunch(int argc, const char *const *args) {
   argv[0] = exe;
   for (int i = 0; i < argc; ++i) argv[i + 1] = (char *)args[i];
   argv[argc + 1] = NULL;
+#if defined(__APPLE__)
+  // Keep the picker's child PID, process group and exit status across a
+  // settings restart. The host has already closed SDL/audio and saved state.
+  execv(exe, argv);
+  fprintf(stderr, "[relaunch] execv(%s) failed: %s\n", exe, strerror(errno));
+  return 0;
+#else
   pid_t pid = 0;
   int rc = posix_spawn(&pid, exe, NULL, NULL, argv, environ);
   if (rc != 0) {
@@ -95,6 +106,7 @@ int snesrecomp_host_relaunch(int argc, const char *const *args) {
     return 0;
   }
   return 1;
+#endif
 #endif
 #endif
 }

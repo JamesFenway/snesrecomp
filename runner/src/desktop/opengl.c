@@ -42,6 +42,13 @@
 
 #define CODE(...) #__VA_ARGS__
 
+#ifdef __APPLE__
+// macOS exposes 3.2 and 4.1 core contexts, not a 3.3 context.
+#define SNES_DESKTOP_GLSL "#version 410 core\n"
+#else
+#define SNES_DESKTOP_GLSL "#version 330 core\n"
+#endif
+
 static SDL_Window *g_window;
 static uint8 *g_screen_buffer;
 static size_t g_screen_buffer_size;
@@ -187,7 +194,7 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
   glEnableVertexAttribArray(1);
 
   // vertex shader
-  const GLchar *vs_code = "#version 330 core\n" CODE(
+  const GLchar *vs_code = SNES_DESKTOP_GLSL CODE(
   layout(location = 0) in vec3 aPos;
   layout(location = 1) in vec2 aTexCoord;
   out vec2 TexCoord;
@@ -210,7 +217,7 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
   }
 
   // fragment shader
-  const GLchar *fs_code = "#version 330 core\n" CODE(
+  const GLchar *fs_code = SNES_DESKTOP_GLSL CODE(
   out vec4 FragColor;
   in vec2 TexCoord;
   // texture samplers
@@ -242,7 +249,7 @@ static bool OpenGLRenderer_Init(SDL_Window *window) {
     printf("%s\n", infolog);
   }
 
-  const GLchar *flash_fs_code = "#version 330 core\n" CODE(
+  const GLchar *flash_fs_code = SNES_DESKTOP_GLSL CODE(
   out vec4 FragColor;
   uniform vec4 color;
   void main(void) {
@@ -454,7 +461,13 @@ static const struct RendererFuncs kOpenGLRendererFuncs = {
 
 void OpenGLRenderer_Create(struct RendererFuncs *funcs) {
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#ifdef __APPLE__
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
+#else
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+#endif
   *funcs = kOpenGLRendererFuncs;
 }
