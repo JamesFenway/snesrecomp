@@ -1248,6 +1248,94 @@ static void NoteStateFrame(void) {
   snes_rewind_note_frame();
 }
 
+/* CONTINUE (SnesDesktopHostGame.continue_label): at every quit made while
+ * the player is in a stage, the moment is kept in saves/continue.sav with a
+ * picture (continue.bmp) and a note (continue.ini: the stage, when) for a
+ * front end to offer, which starts the game with --resume-state on a copy.
+ * A quit from the title or the attract demo keeps the one before. Separate
+ * from Autosave, which uses save slot 0, and from the player's slots.
+ * Scripted runs leave it alone unless SNESRECOMP_CONTINUE=1;
+ * SNESRECOMP_CONTINUE=0 turns it off. */
+static bool WriteBmp24(const char *path, const uint32_t *px, int w, int h) {
+  const int row = (w * 3 + 3) & ~3;
+  const uint32_t size = 54u + (uint32_t)row * (uint32_t)h;
+  uint8_t head[54] = { 'B', 'M' };
+  uint8_t *line;
+  FILE *f;
+  bool ok = true;
+#define PUT32(o, v) do { head[o] = (uint8_t)(v); head[(o) + 1] = (uint8_t)((v) >> 8); \
+    head[(o) + 2] = (uint8_t)((v) >> 16); head[(o) + 3] = (uint8_t)((v) >> 24); } while (0)
+  PUT32(2, size); PUT32(10, 54u); PUT32(14, 40u); PUT32(18, (uint32_t)w); PUT32(22, (uint32_t)h);
+  head[26] = 1; head[28] = 24;
+  PUT32(34, (uint32_t)row * (uint32_t)h);
+#undef PUT32
+  if (!(f = fopen(path, "wb"))) return false;
+  line = (uint8_t *)calloc(1, (size_t)row);
+  ok = line && fwrite(head, 1, sizeof(head), f) == sizeof(head);
+  for (int y = h - 1; ok && y >= 0; y--) {   /* bottom-up */
+    for (int x = 0; x < w; x++) {
+      const uint32_t c = px[(size_t)y * (size_t)w + (size_t)x];
+      line[x * 3 + 0] = (uint8_t)c;
+      line[x * 3 + 1] = (uint8_t)(c >> 8);
+      line[x * 3 + 2] = (uint8_t)(c >> 16);
+    }
+    ok = fwrite(line, 1, (size_t)row, f) == (size_t)row;
+  }
+  free(line);
+  if (fclose(f) != 0) ok = false;
+  return ok;
+}
+
+static bool ReplaceFile(const char *tmp, const char *path) {
+#ifdef _WIN32
+  remove(path);
+#endif
+  if (rename(tmp, path) == 0) return true;
+  remove(tmp);
+  return false;
+}
+
+void MkDir(const char *s);
+static void ContinueSave(bool scripted) {
+  static uint32_t px[kPpuBufWidth * 240];
+  const char *env = getenv("SNESRECOMP_CONTINUE");
+  const char *stage;
+  int w = 0, h = 0;
+  if (!g_game->continue_label || g_netplay_session || g_title_skip) return;
+  if (env ? env[0] == '0' : scripted) return;
+  stage = g_game->continue_label();
+  if (!stage || !stage[0]) {
+    host_report_breadcrumb("continue: not in a stage, the last one is kept");
+    return;
+  }
+  MkDir("saves");
+  if (!RtlSaveSnapshot("saves/continue.sav.tmp") ||
+      !ReplaceFile("saves/continue.sav.tmp", "saves/continue.sav")) {
+    host_report_breadcrumb("continue: FAILED to save the state");
+    return;
+  }
+  if (!ComposeStateThumbnail(px, sizeof(px) / sizeof(px[0]), &w, &h) && g_ppu && g_ppu->renderBuffer) {
+    w = g_game->native_widescreen ? g_snes_width : 256;
+    h = g_snes_height;
+    for (int y = 0; y < h; y++)
+      memcpy(px + (size_t)y * (size_t)w,
+             g_ppu->renderBuffer + (size_t)y * (size_t)g_ppu->renderPitch, (size_t)w * 4);
+  }
+  if (w > 0 && h > 0 && WriteBmp24("saves/continue.bmp.tmp", px, w, h))
+    ReplaceFile("saves/continue.bmp.tmp", "saves/continue.bmp");
+  else
+    remove("saves/continue.bmp");
+  {
+    FILE *f = fopen("saves/continue.ini.tmp", "w");
+    if (f) {
+      fprintf(f, "[Continue]\nStage = %s\nSavedAt = %lld\nBuild = %s\n", stage,
+              (long long)time(NULL), g_game->build_version ? g_game->build_version : "dev");
+      if (fclose(f) == 0) ReplaceFile("saves/continue.ini.tmp", "saves/continue.ini");
+    }
+  }
+  host_report_breadcrumb("continue: saved in %s", stage);
+}
+
 /* The present's multiple of the frame size (SnesDesktopHostGame.present_scale),
  * set by DrawPpuFrameWithPerf for the frame being composed. */
 static int g_render_scale = 1;
@@ -1707,9 +1795,12 @@ static void PauseMenuKeyDown(int key, int repeat) {
  * reaches HandleInput so a direction held across the close does not stick
  * in the guest afterwards; and every controller event is handled exactly as
  * the main loop handles it. */
+static void AwayNoteOverlayEvent(const SDL_Event *e);
+
 static void PumpOverlayEvents(bool *running, void (*key_down)(int key, int repeat)) {
   SDL_Event event;
   while (SDL_PollEvent(&event)) {
+    AwayNoteOverlayEvent(&event);
     if (HandleDeviceEvent(&event))
       continue;
     switch (event.type) {
@@ -2020,15 +2111,15 @@ static void PresentFrozenWithOverlay(void) {
    * it from the module reporting itself open. */
   {
     /* SNESRECOMP_PAUSE_MENU_DUMP=<prefix>: <prefix>.<step>.ppm, the first
-     * present of each step of the pause-menu self-test (the browser it
-     * opens included; see PauseSelftestNav). */
+     * present of each step of the pause-menu self-test (the browser and
+     * the rewind filmstrip it opens included; see PauseSelftestNav). */
     static int dumped_menu = 0, dumped_rewind = 0, dumped_step = -1;
     static int not_dumped;
     char step_path[512];
     const char *dump = is_menu ? HostGetenv("OVERLAY_DUMP") : HostGetenv("REWIND_DUMP");
     int *dumped = is_menu ? &dumped_menu : &dumped_rewind;
     if (is_pause) dump = NULL;
-    if ((is_pause || is_menu) && HostGetenv("PAUSE_MENU_DUMP") && g_pause_selftest_step >= 0 &&
+    if (HostGetenv("PAUSE_MENU_DUMP") && g_pause_selftest_step >= 0 &&
         dumped_step != g_pause_selftest_step) {
       snprintf(step_path, sizeof(step_path), "%s.%d.ppm",
                HostGetenv("PAUSE_MENU_DUMP"), g_pause_selftest_step);
@@ -2112,7 +2203,9 @@ static void RewindKeyDown(int key, int repeat) {
  * ports: Left/Right scrub (hold to keep scrubbing), Enter or Space commits,
  * Escape cancels, and the pad mirrors them. */
 static void RunRewindLoop(bool *running) {
-  uint32 prev_pad = 0;
+  /* Buttons already down count as held: the A that picked REWIND in the
+   * pause menu must be released before it can commit a snapshot. */
+  uint32 prev_pad = OverlayNavInputs();
   uint32 held_dir = 0;
   uint32 held_since = 0, last_repeat = 0;
   unsigned frames = 0;
@@ -2129,7 +2222,7 @@ static void RunRewindLoop(bool *running) {
       /* Edge-triggered, with a hold-to-repeat: holding Left must not sprint
        * through the whole ring in a single pass of this loop. */
       const uint32 now = SDL_GetTicks();
-      const uint32 pad = OverlayNavInputs();
+      const uint32 pad = PauseSelftestNav(OverlayNavInputs());
       const uint32 pressed = pad & ~prev_pad;
       const uint32 dir = pad & (SNES_PAD_LEFT | SNES_PAD_RIGHT);
       if (pressed & SNES_PAD_LEFT)  snes_rewind_step(-1);
@@ -3553,6 +3646,132 @@ static uint32 PauseSelftestNav(uint32 real) {
   return bit;
 }
 
+/* Pause when away ([General] PauseWhenAway, default on; pause_menu hosts
+ * only): the pause menu opens when the window loses focus or is minimised
+ * (the Steam overlay in Desktop Mode, alt-tab, another window), or when the
+ * machine has slept (the Deck's power button). A guest left running behind
+ * the overlay keeps playing -- and losing lives -- with nobody watching.
+ *
+ * Focus counts only after the window has had it once, so a game started
+ * behind another window (a front end that keeps focus) is not paused at its
+ * first frame, and nothing counts in the first two seconds of play: window
+ * setup alone sends focus, hide and show events (SDL's dummy driver sends a
+ * focus loss right after the gain). Scripted runs are never paused (no one
+ * could close the menu) except by the self-test. Sleep is read from the gap
+ * between
+ * CLOCK_BOOTTIME, which runs on through a suspend, and CLOCK_MONOTONIC,
+ * which stops: it grows only while the machine is asleep, so a long frame
+ * (a loading hitch, a debugger stop) never reads as one.
+ *
+ * Self-test, off by default: SNESRECOMP_AWAY_SELFTEST="<frame>:focus" or
+ * "<frame>:sleep" fakes that event at <frame>; the menu it opens is closed
+ * again with B, so a headless run goes on. */
+static bool g_away_had_focus;
+static bool g_away_scripted;            /* --script: only the self-test pauses */
+static const char *g_away_reason;       /* pending: opens the menu this frame */
+static long g_away_selftest_frame = -2;
+static char g_away_selftest_kind[16];
+
+static void AwayNoteEvent(const SDL_Event *e) {
+  bool lost = false, gained = false;
+#if SNESRECOMP_SDL3
+  switch (e->type) {
+  case SDL_EVENT_WINDOW_FOCUS_GAINED: gained = true; break;
+  case SDL_EVENT_WINDOW_FOCUS_LOST:
+  case SDL_EVENT_WINDOW_MINIMIZED:
+  case SDL_EVENT_WINDOW_HIDDEN:
+  case SDL_EVENT_WILL_ENTER_BACKGROUND: lost = true; break;
+  default: break;
+  }
+#else
+  if (e->type == SDL_WINDOWEVENT) {
+    switch (e->window.event) {
+    case SDL_WINDOWEVENT_FOCUS_GAINED: gained = true; break;
+    case SDL_WINDOWEVENT_FOCUS_LOST:
+    case SDL_WINDOWEVENT_MINIMIZED:
+    case SDL_WINDOWEVENT_HIDDEN: lost = true; break;
+    default: break;
+    }
+  } else if (e->type == SDL_APP_WILLENTERBACKGROUND) {
+    lost = true;
+  }
+#endif
+  if (gained) g_away_had_focus = true;
+  if (lost && g_away_had_focus) {
+    g_away_had_focus = false;   /* once per absence */
+    g_away_reason = "the window lost focus";
+  }
+}
+
+/* An overlay is already up (the game is frozen): keep the focus record in
+ * step, so a later absence still pauses, but don't queue a pause for it. */
+static void AwayNoteOverlayEvent(const SDL_Event *e) {
+  const char *pending = g_away_reason;
+  AwayNoteEvent(e);
+  g_away_reason = pending;
+}
+
+/* Seconds the machine has spent asleep since boot (0 where unknown). */
+static double AwaySleptSeconds(void) {
+#if defined(__linux__)
+  struct timespec boot, mono;
+  if (clock_gettime(CLOCK_BOOTTIME, &boot) == 0 && clock_gettime(CLOCK_MONOTONIC, &mono) == 0)
+    return (double)(boot.tv_sec - mono.tv_sec) + (double)(boot.tv_nsec - mono.tv_nsec) / 1e9;
+#endif
+  return 0;
+}
+
+/* Main loop, every pass: true when the menu should open now. */
+static bool AwayTick(unsigned frame) {
+  static double slept = -1;
+  const double now_slept = AwaySleptSeconds();
+  if (slept >= 0 && now_slept - slept > 1.0) g_away_reason = "the machine slept";
+  slept = now_slept;
+  if (g_away_selftest_frame == -2) {
+    const char *v = HostGetenv("AWAY_SELFTEST");
+    char *end = NULL;
+    g_away_selftest_frame = v ? strtol(v, &end, 0) : -1;
+    snprintf(g_away_selftest_kind, sizeof(g_away_selftest_kind), "%s",
+             end && *end == ':' ? end + 1 : "focus");
+  }
+  if (g_away_selftest_frame >= 0 && (long)frame == g_away_selftest_frame) {
+    g_away_selftest_frame = -1;
+    fprintf(stderr, "[away_selftest] frame %u: faking %s\n", frame, g_away_selftest_kind);
+    if (!strcmp(g_away_selftest_kind, "sleep")) {
+      g_away_reason = "the machine slept";
+    } else {
+      SDL_Event e;
+      memset(&e, 0, sizeof(e));
+#if SNESRECOMP_SDL3
+      e.type = SDL_EVENT_WINDOW_FOCUS_LOST;
+#else
+      e.type = SDL_WINDOWEVENT;
+      e.window.event = SDL_WINDOWEVENT_FOCUS_LOST;
+#endif
+      g_away_had_focus = true;
+      AwayNoteEvent(&e);
+    }
+    if (g_away_reason) {
+      g_pause_selftest_keys = "b";   /* close it again, as a player coming back */
+      g_pause_selftest_release = 1;
+      g_pause_selftest_step = 0;
+    }
+  }
+  if (!g_away_reason) return false;
+  {
+    const char *why = g_away_reason;
+    const bool selftest = g_pause_selftest_keys != NULL;
+    g_away_reason = NULL;
+    if (!g_game->pause_menu || !g_config.pause_when_away || g_title_skip || g_netplay_session)
+      return false;
+    if (!selftest && (frame < 120 || g_away_scripted))
+      return false;
+    host_report_breadcrumb("pause when away: %s, opening the pause menu", why);
+    fprintf(stderr, "[away] %s: pausing\n", why);
+  }
+  return true;
+}
+
 /* The pause menu's modal pump. The guest is FROZEN throughout, as in the
  * save-state browser: nothing here calls RtlRunFrame. SAVE and LOAD run the
  * browser's own loop and come back here; OPTIONS opens the page above
@@ -3566,6 +3785,7 @@ static void RunPauseMenuLoop(bool *running, const char **exit_reason) {
   size_t mods_before_len = 0;
   host_report_breadcrumb("pause menu OPEN - guest frozen until RESUME "
                          "(pad B or Select+Start, Escape on the keyboard)");
+  snes_pause_menu_set_rewind(snes_rewind_enabled());
   snes_pause_menu_open();
   g_turbo = false;   /* follows a held key; the menu eats the release */
   g_overlay_modal = true;
@@ -3596,6 +3816,27 @@ static void RunPauseMenuLoop(bool *running, const char **exit_reason) {
       SetAudioPaused(true);
       if (snes_savestate_menu_take_loaded()) {
         host_report_breadcrumb("pause menu: state loaded, resuming");
+        snes_pause_menu_close();
+      } else {
+        snes_pause_menu_rearm(OverlayNavInputs());
+      }
+      break;
+    }
+    case SNES_PAUSE_REWIND: {
+      /* The filmstrip takes the screen (PresentFrozenWithOverlay draws it
+       * over the menu). A pick resumes the game from there; B comes back
+       * to the menu. */
+      const uint64_t generation = RtlStateGeneration();
+      host_report_breadcrumb("pause menu: REWIND");
+      if (!snes_rewind_open()) {
+        snes_pause_menu_set_status("NOTHING TO REWIND YET");
+        break;
+      }
+      RunRewindLoop(running);
+      g_overlay_modal = true;
+      SetAudioPaused(true);
+      if (RtlStateGeneration() != generation) {
+        host_report_breadcrumb("pause menu: rewound, resuming");
         snes_pause_menu_close();
       } else {
         snes_pause_menu_rearm(OverlayNavInputs());
@@ -4396,8 +4637,10 @@ error_reading:;
     if (resumed) remove(args.resume_state);
   }
 
-  if (script_file)
+  if (script_file) {
     LoadScript(script_file);
+    g_away_scripted = true;
+  }
 
   if (framedump_dir)
     FrameDump_Init(framedump_dir);
@@ -4474,6 +4717,7 @@ error_reading:;
     while (SDL_PollEvent(&event)) {
       if (HandleDeviceEvent(&event))
         continue;
+      AwayNoteEvent(&event);
       switch (event.type) {
       case SDL_MOUSEWHEEL:
         if (SDL_GetModState() & KMOD_CTRL && event.wheel.y != 0)
@@ -4515,6 +4759,8 @@ error_reading:;
     }
     if (!running)
       break;
+    if (AwayTick(frameCtr))
+      g_pause_menu_hotkey = 1;
     OverlaySelftestPadMainTick(frameCtr);
     /* SNESRECOMP_VOLUME_DEMO=<frame>: press VolumeDown once at that frame, so
      * a headless screenshot can show the bar. */
@@ -5031,6 +5277,7 @@ error_reading:;
           g_timings[i].maximum * 1000, g_timings[i].maximum_frame);
   }
 
+  ContinueSave(script_file != NULL);
   if (g_config.autosave && !g_netplay_session)
     HandleCommand(kKeys_Save + 0, true);
   /* A volume or fullscreen change made with the keys survives the session,

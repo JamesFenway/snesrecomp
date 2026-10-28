@@ -115,13 +115,14 @@ suite through `tests/test_output_resolution.py`.
 
 `SnesDesktopHostGame.pause_menu = 1` adds a pause menu over the frozen game
 (`runner/src/snes_pause_menu.c`, its modal loop `RunPauseMenuLoop` in
-`host_main.c`): RESUME, SAVE, LOAD, OPTIONS, BACK TO MENU and BACK TO
-LAUNCHER. It opens on Select+Start pressed together, or `[KeyMap] PauseMenu`
+`host_main.c`): RESUME, REWIND (when `[Rewind] Enabled`), SAVE, LOAD,
+OPTIONS, BACK TO MENU and BACK TO LAUNCHER. It opens on Select+Start pressed together, or `[KeyMap] PauseMenu`
 (default Escape once opted in). The game's own Start pause is untouched.
 
 | Item | What the host does |
 |---|---|
 | RESUME (also B, Select+Start, Escape) | closes; the guest comes back bit-identical |
+| REWIND | the rewind filmstrip (`snes_rewind.c`, also Select+R3 / F8): Left/Right step through the last `[Rewind] Depth` snapshots (one every 6 frames), A plays on from the chosen one and closes the menu, B comes back to the menu unchanged. "NOTHING TO REWIND YET" when the ring is empty. Hosts set `rewind_settings = 1` for the config rows and key |
 | SAVE / LOAD | the save-state browser opened in that mode (A saves or loads; saving over a used slot takes a second A); B comes back to the menu, a load resumes |
 | OPTIONS | the menu's own page: VOLUME, then every mod feature the launcher's Mods page shows (groups Display, Gameplay, the rest, Cheats/Testing; Coverage Capture left out), with a feature's options under it while it is on. Up/Down pick, Left/Right or A change, B goes back. Volume applies at once; mod changes are committed on leaving the page and, if state.toml changed, the game restarts from that moment (saves/resume.sav, as the in-game launcher does). Controls, ROM and netplay stay in the launcher. |
 | BACK TO MENU | asks first; console reset, then the boot runs uncapped, unrendered and without input until the title's `title_menu_ready()` returns nonzero (a minute at most). Without the hook, a plain reset |
@@ -138,6 +139,27 @@ menu at that frame and plays pad keys into it and into the browser it opens
 (`u d l r a b x s`), e.g. `5000:d,a,a,b,b` saves to the selected slot and
 resumes. `SNESRECOMP_PAUSE_MENU_DUMP=<prefix>` writes each step's picture.
 Unit test: `tests/host/pause_menu`.
+
+Pause when away: with the menu enabled and `[General] PauseWhenAway = 1`
+(the default), the menu opens by itself when the window loses focus, is
+minimized or hidden (the Steam overlay in Game Mode, Alt-Tab), when the OS
+sends the app to the background, or when the clock shows the machine slept
+(`CLOCK_BOOTTIME` gained over a second on `CLOCK_MONOTONIC`: the Deck's
+suspend). Not in the first 120 frames, scripted runs, netplay or a title
+skip. Self-test `SNESRECOMP_AWAY_SELFTEST="<frame>:focus|sleep"` (then B).
+
+## CONTINUE (resume point for a front end)
+
+A host that sets `SnesDesktopHostGame.continue_label` gets a resume point
+written on every normal exit, next to the autosave: `saves/continue.sav`
+(a full save state), `saves/continue.bmp` (its thumbnail) and
+`saves/continue.ini` (`[Continue]` Stage = the label, SavedAt = unix time,
+Build). Each file goes through a temporary name and a rename. The label is
+the game's stage name, or NULL when not in a played stage (title, attract
+demo), which keeps the previous point. Not written in netplay, during a
+title skip, with `SNESRECOMP_CONTINUE=0`, or in scripted runs unless
+`SNESRECOMP_CONTINUE=1`. The trilogy picker shows it on the game's card and
+starts the game with `--resume-state <copy>`.
 
 ## What stayed in snesrecomp
 

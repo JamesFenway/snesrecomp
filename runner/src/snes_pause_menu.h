@@ -8,9 +8,10 @@ extern "C" {
 #endif
 
 /*
- * In-game pause menu (SnesDesktopHostGame.pause_menu): RESUME, SAVE, LOAD,
- * OPTIONS, BACK TO MENU and BACK TO LAUNCHER (QUIT GAME when no front end
- * started the game), over the frozen game.
+ * In-game pause menu (SnesDesktopHostGame.pause_menu): RESUME, REWIND (while
+ * the rewind ring is on), SAVE, LOAD, OPTIONS, BACK TO MENU and BACK TO
+ * LAUNCHER (QUIT GAME when no front end started the game), over the frozen
+ * game.
  *
  * Opened with Select+Start pressed together on the pad, or the PauseMenu key
  * (Escape by default). Like the save-state browser, the guest is FROZEN while
@@ -46,6 +47,7 @@ typedef enum SnesPauseAction {
   SNES_PAUSE_TITLE,    /* back to the game's title menu (confirmed) */
   SNES_PAUSE_QUIT,     /* back to the launcher, or quit (confirmed) */
   SNES_PAUSE_OPTIONS_DONE,  /* left the OPTIONS page (B), back on the list */
+  SNES_PAUSE_REWIND,   /* open the rewind filmstrip; the menu stays open */
 } SnesPauseAction;
 
 /* The OPTIONS page: rows the host supplies (volume, mods, ...), drawn and
@@ -79,6 +81,10 @@ typedef struct SnesPauseOptionsSource {
 void snes_pause_menu_configure(const char *title, const SnesPauseOptionsSource *options,
                                int to_launcher);
 
+/* Lists REWIND (second, under RESUME) while `available`. The host calls it
+ * before each open with snes_rewind_enabled(). */
+void snes_pause_menu_set_rewind(int available);
+
 int  snes_pause_menu_is_open(void);
 void snes_pause_menu_open(void);
 void snes_pause_menu_close(void);
@@ -98,8 +104,8 @@ void snes_pause_menu_poll_nav(uint32_t inputs, uint32_t ticks_ms);
 void snes_pause_menu_handle_key(int key, int repeat);
 
 /* The action chosen since the last call, then SNES_PAUSE_NONE again. The
- * menu stays open for SAVE / LOAD / OPTIONS (which opens the page) and
- * OPTIONS_DONE, so the host returns to it; it closes itself for RESUME,
+ * menu stays open for REWIND / SAVE / LOAD / OPTIONS (which opens the page)
+ * and OPTIONS_DONE, so the host returns to it; it closes itself for RESUME,
  * TITLE and QUIT. */
 SnesPauseAction snes_pause_menu_take_action(void);
 

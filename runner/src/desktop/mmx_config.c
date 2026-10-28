@@ -597,6 +597,8 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
     } else if (StringEqualsNoCase(key, "Autosave")) {
       g_config.autosave = (bool)strtol(value, (char **)NULL, 10);
       return true;
+    } else if (StringEqualsNoCase(key, "PauseWhenAway")) {
+      return ParseBool(value, &g_config.pause_when_away);
     } else if (StringEqualsNoCase(key, "DisplayPerfInTitle")) {
       return ParseBool(value, &g_config.display_perf_title);
     } else if (StringEqualsNoCase(key, "DisableFrameDelay")) {
@@ -688,6 +690,7 @@ void ParseConfigFile(const char *filename) {
   g_config.gamepad_deadzone = SNES_CONFIG_DEFAULT_DEADZONE;
   g_config.display_aspect = kSnesDisplayAspect_Crt4x3;
   g_config.skip_launcher = false;
+  g_config.pause_when_away = true;
   /* Rewind's built-in ring, matching snes_rewind.c's own defaults so a host
    * that opts into the launcher rows starts from what it already had. */
   g_config.rewind_enabled = true;
@@ -905,6 +908,7 @@ void WriteConfigFile(const char *filename) {
     { "Graphics",   "VSync" },
     { "Graphics",   "Renderer" },
     { "General",    "RunAhead" },
+    { "General",    "PauseWhenAway" },
     { "Sound",      "Volume" },
     { "Controller", "SourceP1" },
     { "Controller", "SourceP2" },
@@ -949,6 +953,7 @@ void WriteConfigFile(const char *filename) {
   CfgSet(kvs, N, "Graphics", "Renderer", "%s",
          g_config.renderer[0] ? g_config.renderer : "auto");
   CfgSet(kvs, N, "General", "RunAhead", "%d", g_config.run_ahead);
+  CfgSet(kvs, N, "General", "PauseWhenAway", "%d", g_config.pause_when_away ? 1 : 0);
   CfgSet(kvs, N, "Sound", "Volume", "%d", g_config.volume);
   CfgSet(kvs, N, "Controller", "SourceP1", "%d", g_config.player_src[0]);
   CfgSet(kvs, N, "Controller", "SourceP2", "%d", g_config.player_src[1]);
