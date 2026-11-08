@@ -81,6 +81,31 @@ typedef struct SnesPauseOptionsSource {
 void snes_pause_menu_configure(const char *title, const SnesPauseOptionsSource *options,
                                int to_launcher);
 
+/* A game's own look for the panel (both pages and the NO / YES question).
+ * Layout, rows and navigation stay the module's; only the drawing changes.
+ * Colours are ARGB; a colour whose alpha is 0 is not drawn at all (so a
+ * style can drop the header band or the selected row's outline). Every
+ * callback is optional. With no style (or NULL) the panel is the stock one.
+ *
+ *  - box: decorates a box after its fill, before its contents (the game's
+ *    window frame, a background pattern). (x, y, w, h) is the box.
+ *  - text: draws `s` at (x, y), 8 * scale pixels per character, so the
+ *    layout fits. `col` is one of the style's colours (accent, text, dim),
+ *    which tells the game's font which role the text has.
+ *  - cursor: marks the selected row of the item list instead of the stock
+ *    dot. (x, y) is the row's top left, 32 x row_h pixels free there.
+ * The style and its callbacks must outlive the menu. */
+typedef struct SnesPauseMenuStyle {
+  uint32_t col_bg, col_head, col_edge, col_accent, col_text, col_dim;
+  uint32_t col_sel_bg, col_sel_edge;
+  void (*box)(uint32_t *panel, int stride, int h_max, int x, int y, int w, int h);
+  void (*text)(uint32_t *panel, int stride, int h_max, int x, int y, const char *s,
+               uint32_t col, int scale);
+  void (*cursor)(uint32_t *panel, int stride, int h_max, int x, int y, int row_h);
+} SnesPauseMenuStyle;
+
+void snes_pause_menu_set_style(const SnesPauseMenuStyle *style);
+
 /* Lists REWIND (second, under RESUME) while `available`. The host calls it
  * before each open with snes_rewind_enabled(). */
 void snes_pause_menu_set_rewind(int available);

@@ -19,14 +19,22 @@
 #define PM_ROW_H 34
 #define PM_TEXT_SCALE 2
 
-/* Trilogy gold on the save-state browser's dark blue. */
-#define PM_COL_BG     0xFF0F1118u
-#define PM_COL_HEAD   0xFF171B25u
-#define PM_COL_EDGE   0xFF303746u
-#define PM_COL_GOLD   0xFFFFD24Du
-#define PM_COL_TEXT   0xFFE2E5EBu
-#define PM_COL_DIM    0xFF7F8796u
-#define PM_COL_SEL_BG 0xFF2B2830u
+/* Trilogy gold on the save-state browser's dark blue, unless the game
+ * gives a style (snes_pause_menu_set_style). */
+static const SnesPauseMenuStyle kStockStyle = {
+  .col_bg = 0xFF0F1118u, .col_head = 0xFF171B25u, .col_edge = 0xFF303746u,
+  .col_accent = 0xFFFFD24Du, .col_text = 0xFFE2E5EBu, .col_dim = 0xFF7F8796u,
+  .col_sel_bg = 0xFF2B2830u, .col_sel_edge = 0xFFFFD24Du,
+};
+static const SnesPauseMenuStyle *s_style = &kStockStyle;
+#define PM_COL_BG     (s_style->col_bg)
+#define PM_COL_HEAD   (s_style->col_head)
+#define PM_COL_EDGE   (s_style->col_edge)
+#define PM_COL_GOLD   (s_style->col_accent)
+#define PM_COL_TEXT   (s_style->col_text)
+#define PM_COL_DIM    (s_style->col_dim)
+#define PM_COL_SEL_BG (s_style->col_sel_bg)
+#define PM_COL_SEL_EDGE (s_style->col_sel_edge)
 
 typedef struct PmItem {
   const char *label;
@@ -371,10 +379,40 @@ void snes_pause_menu_handle_key(int key, int repeat)
 
 /* ── Panel ─────────────────────────────────────────────────────────────── */
 
+void snes_pause_menu_set_style(const SnesPauseMenuStyle *style)
+{
+  s_style = style ? style : &kStockStyle;
+  s_dirty = 1;
+}
+
+/* Drawing goes through the style: alpha 0 = not drawn, text and the
+ * cursor through its callbacks when it has them. */
+static void pm_fill(int x, int y, int w, int h, uint32_t col)
+{
+  if (col >> 24) snes_ovl_fill_rect(s_panel, PM_W, PM_H, x, y, w, h, col);
+}
+
+static void pm_stroke(int x, int y, int w, int h, uint32_t col)
+{
+  if (col >> 24) snes_ovl_stroke_rect(s_panel, PM_W, PM_H, x, y, w, h, col);
+}
+
+static void pm_text(int x, int y, const char *s, uint32_t col, int scale)
+{
+  if (s_style->text) s_style->text(s_panel, PM_W, PM_H, x, y, s, col, scale);
+  else snes_ovl_draw_text(s_panel, PM_W, PM_H, x, y, s, col, scale);
+}
+
+static void pm_box(int x, int y, int w, int h)
+{
+  pm_fill(x, y, w, h, PM_COL_BG);
+  if (s_style->box) s_style->box(s_panel, PM_W, PM_H, x, y, w, h);
+}
+
 static void text_centered(int cx, int y, const char *s, uint32_t col, int scale)
 {
   int w = (int)strlen(s) * 8 * scale;
-  snes_ovl_draw_text(s_panel, PM_W, PM_H, cx - w / 2, y, s, col, scale);
+  pm_text(cx - w / 2, y, s, col, scale);
 }
 
 /* The OPTIONS page. */
@@ -452,9 +490,9 @@ static void rasterize_options(void)
   memset(&sel_row, 0, sizeof(sel_row));
   opt_keep_visible(n, shown);
   memset(s_panel, 0, sizeof(s_panel));
-  snes_ovl_fill_rect(s_panel, PM_W, PM_H, bx, by, PO_BOX_W, box_h, PM_COL_BG);
-  snes_ovl_fill_rect(s_panel, PM_W, PM_H, bx, by, PO_BOX_W, head_h, PM_COL_HEAD);
-  snes_ovl_stroke_rect(s_panel, PM_W, PM_H, bx, by, PO_BOX_W, box_h, PM_COL_EDGE);
+  pm_box(bx, by, PO_BOX_W, box_h);
+  pm_fill(bx, by, PO_BOX_W, head_h, PM_COL_HEAD);
+  pm_stroke(bx, by, PO_BOX_W, box_h, PM_COL_EDGE);
   text_centered(cx, by + 8, "OPTIONS", PM_COL_GOLD, 2);
   text_centered(cx, by + 28, s_title, PM_COL_DIM, 1);
 
@@ -464,9 +502,9 @@ static void rasterize_options(void)
     if (!opt_row(i, &r)) continue;
     if (sel) sel_row = r;
     if (r.heading) {
-      snes_ovl_draw_text(s_panel, PM_W, PM_H, bx + 16, y + 12, r.label, PM_COL_GOLD, 1);
-      snes_ovl_fill_rect(s_panel, PM_W, PM_H, bx + 16 + (int)strlen(r.label) * 8 + 8, y + 15,
-                         PO_BOX_W - 40 - (int)strlen(r.label) * 8 - 8, 1, PM_COL_EDGE);
+      pm_text(bx + 16, y + 12, r.label, PM_COL_GOLD, 1);
+      pm_fill(bx + 16 + (int)strlen(r.label) * 8 + 8, y + 15,
+              PO_BOX_W - 40 - (int)strlen(r.label) * 8 - 8, 1, PM_COL_EDGE);
       continue;
     }
     {
@@ -476,35 +514,35 @@ static void rasterize_options(void)
       char val[48];
       int vscale, vw, lscale;
       if (sel) {
-        snes_ovl_fill_rect(s_panel, PM_W, PM_H, bx + 10, y, PO_BOX_W - 20, PO_ROW_H - 2,
-                           PM_COL_SEL_BG);
-        snes_ovl_stroke_rect(s_panel, PM_W, PM_H, bx + 10, y, PO_BOX_W - 20, PO_ROW_H - 2,
-                             PM_COL_GOLD);
+        pm_fill(bx + 10, y, PO_BOX_W - 20, PO_ROW_H - 2,
+                PM_COL_SEL_BG);
+        pm_stroke(bx + 10, y, PO_BOX_W - 20, PO_ROW_H - 2,
+                  PM_COL_SEL_EDGE);
       }
       snprintf(val, sizeof(val), (sel && !r.disabled) ? "< %s >" : "%s", r.value);
       vscale = (int)strlen(val) * 16 <= 176 ? 2 : 1;
       vw = (int)strlen(val) * 8 * vscale;
-      snes_ovl_draw_text(s_panel, PM_W, PM_H, right - vw, y + (vscale == 2 ? 3 : 7), val,
-                         col, vscale);
+      pm_text(right - vw, y + (vscale == 2 ? 3 : 7), val,
+              col, vscale);
       lscale = fit_text(buf, sizeof(buf), r.label, right - vw - 16 - lx);
-      snes_ovl_draw_text(s_panel, PM_W, PM_H, lx, y + (lscale == 2 ? 3 : 7), buf, col, lscale);
+      pm_text(lx, y + (lscale == 2 ? 3 : 7), buf, col, lscale);
     }
   }
   /* Scroll marks. */
   if (s_opt_top > 0)
-    snes_ovl_draw_text(s_panel, PM_W, PM_H, bx + PO_BOX_W - 12, by + head_h + 2, "^",
-                       PM_COL_DIM, 1);
+    pm_text(bx + PO_BOX_W - 12, by + head_h + 2, "^",
+            PM_COL_DIM, 1);
   if (s_opt_top + shown < n)
-    snes_ovl_draw_text(s_panel, PM_W, PM_H, bx + PO_BOX_W - 12, y, "V", PM_COL_DIM, 1);
+    pm_text(bx + PO_BOX_W - 12, y, "V", PM_COL_DIM, 1);
 
   y += 8;
   {
     char lines[PO_HELP_LINES][PO_HELP_CHARS + 1];
     int l;
     wrap_help(sel_row.help, lines);
-    snes_ovl_fill_rect(s_panel, PM_W, PM_H, bx + 16, y - 4, PO_BOX_W - 32, 1, PM_COL_EDGE);
+    pm_fill(bx + 16, y - 4, PO_BOX_W - 32, 1, PM_COL_EDGE);
     for (l = 0; l < PO_HELP_LINES; l++)
-      snes_ovl_draw_text(s_panel, PM_W, PM_H, bx + 16, y + 4 + 12 * l, lines[l], PM_COL_DIM, 1);
+      pm_text(bx + 16, y + 4 + 12 * l, lines[l], PM_COL_DIM, 1);
   }
   y += help_h;
   if (s_status[0]) note = s_status;
@@ -512,13 +550,13 @@ static void rasterize_options(void)
 
   {
     const int fy = by + box_h - foot_h;
-    snes_ovl_fill_rect(s_panel, PM_W, PM_H, bx + 1, fy, PO_BOX_W - 2, foot_h - 1, PM_COL_HEAD);
+    pm_fill(bx + 1, fy, PO_BOX_W - 2, foot_h - 1, PM_COL_HEAD);
     snes_ovl_draw_button(s_panel, PM_W, PM_H, bx + 20, fy + 11, 'A', SNES_OVL_COL_A);
-    snes_ovl_draw_text(s_panel, PM_W, PM_H, bx + 44, fy + 16, "OR < > CHANGE", PM_COL_TEXT, 1);
+    pm_text(bx + 44, fy + 16, "OR < > CHANGE", PM_COL_TEXT, 1);
     snes_ovl_draw_button(s_panel, PM_W, PM_H, bx + 176, fy + 11, 'B', SNES_OVL_COL_B);
-    snes_ovl_draw_text(s_panel, PM_W, PM_H, bx + 200, fy + 16, "BACK", PM_COL_TEXT, 1);
-    snes_ovl_draw_text(s_panel, PM_W, PM_H, bx + 264, fy + 16, "UP/DOWN PICK A ROW",
-                       PM_COL_DIM, 1);
+    pm_text(bx + 200, fy + 16, "BACK", PM_COL_TEXT, 1);
+    pm_text(bx + 264, fy + 16, "UP/DOWN PICK A ROW",
+            PM_COL_DIM, 1);
   }
   s_dirty = 0;
 }
@@ -537,9 +575,9 @@ static void rasterize(void)
   int i, y;
 
   memset(s_panel, 0, sizeof(s_panel));
-  snes_ovl_fill_rect(s_panel, PM_W, PM_H, bx, by, PM_BOX_W, box_h, PM_COL_BG);
-  snes_ovl_fill_rect(s_panel, PM_W, PM_H, bx, by, PM_BOX_W, head_h, PM_COL_HEAD);
-  snes_ovl_stroke_rect(s_panel, PM_W, PM_H, bx, by, PM_BOX_W, box_h, PM_COL_EDGE);
+  pm_box(bx, by, PM_BOX_W, box_h);
+  pm_fill(bx, by, PM_BOX_W, head_h, PM_COL_HEAD);
+  pm_stroke(bx, by, PM_BOX_W, box_h, PM_COL_EDGE);
   text_centered(cx, by + 8, "PAUSED", PM_COL_GOLD, 2);
   text_centered(cx, by + 28, s_title, PM_COL_DIM, 1);
 
@@ -557,11 +595,11 @@ static void rasterize(void)
         const int sel = (k == 1) == (s_confirm_yes != 0);
         const int x = k ? yx : nx;
         if (sel) {
-          snes_ovl_fill_rect(s_panel, PM_W, PM_H, x - 8, ry, 80, PM_ROW_H - 4, PM_COL_SEL_BG);
-          snes_ovl_stroke_rect(s_panel, PM_W, PM_H, x - 8, ry, 80, PM_ROW_H - 4, PM_COL_GOLD);
+          pm_fill(x - 8, ry, 80, PM_ROW_H - 4, PM_COL_SEL_BG);
+          pm_stroke(x - 8, ry, 80, PM_ROW_H - 4, PM_COL_SEL_EDGE);
         }
-        snes_ovl_draw_text(s_panel, PM_W, PM_H, x + (k ? 8 : 16), ry + 7,
-                           k ? "YES" : "NO", sel ? PM_COL_GOLD : PM_COL_TEXT, 2);
+        pm_text(x + (k ? 8 : 16), ry + 7,
+                k ? "YES" : "NO", sel ? PM_COL_GOLD : PM_COL_TEXT, 2);
       }
     }
   } else {
@@ -569,14 +607,17 @@ static void rasterize(void)
       const int ry = y + i * PM_ROW_H;
       const int sel = i == s_selected;
       if (sel) {
-        snes_ovl_fill_rect(s_panel, PM_W, PM_H, bx + 12, ry, PM_BOX_W - 24, PM_ROW_H - 4,
-                           PM_COL_SEL_BG);
-        snes_ovl_stroke_rect(s_panel, PM_W, PM_H, bx + 12, ry, PM_BOX_W - 24, PM_ROW_H - 4,
-                             PM_COL_GOLD);
-        snes_ovl_fill_disc(s_panel, PM_W, PM_H, bx + 30, ry + 15, 4, PM_COL_GOLD);
+        pm_fill(bx + 12, ry, PM_BOX_W - 24, PM_ROW_H - 4,
+                PM_COL_SEL_BG);
+        pm_stroke(bx + 12, ry, PM_BOX_W - 24, PM_ROW_H - 4,
+                  PM_COL_SEL_EDGE);
+        if (s_style->cursor)
+          s_style->cursor(s_panel, PM_W, PM_H, bx + 14, ry, PM_ROW_H - 4);
+        else
+          snes_ovl_fill_disc(s_panel, PM_W, PM_H, bx + 30, ry + 15, 4, PM_COL_GOLD);
       }
-      snes_ovl_draw_text(s_panel, PM_W, PM_H, bx + 48, ry + 7, s_items[i].label,
-                         sel ? PM_COL_GOLD : PM_COL_TEXT, PM_TEXT_SCALE);
+      pm_text(bx + 48, ry + 7, s_items[i].label,
+              sel ? PM_COL_GOLD : PM_COL_TEXT, PM_TEXT_SCALE);
     }
   }
   y += rows * PM_ROW_H + 8;
@@ -587,14 +628,14 @@ static void rasterize(void)
 
   {
     const int fy = by + box_h - foot_h;
-    snes_ovl_fill_rect(s_panel, PM_W, PM_H, bx + 1, fy, PM_BOX_W - 2, foot_h - 1, PM_COL_HEAD);
+    pm_fill(bx + 1, fy, PM_BOX_W - 2, foot_h - 1, PM_COL_HEAD);
     snes_ovl_draw_button(s_panel, PM_W, PM_H, bx + 20, fy + 11, 'A', SNES_OVL_COL_A);
-    snes_ovl_draw_text(s_panel, PM_W, PM_H, bx + 44, fy + 16, "CHOOSE", PM_COL_TEXT, 1);
+    pm_text(bx + 44, fy + 16, "CHOOSE", PM_COL_TEXT, 1);
     snes_ovl_draw_button(s_panel, PM_W, PM_H, bx + 116, fy + 11, 'B', SNES_OVL_COL_B);
-    snes_ovl_draw_text(s_panel, PM_W, PM_H, bx + 140, fy + 16,
-                       s_confirming ? "NO" : "RESUME", PM_COL_TEXT, 1);
-    snes_ovl_draw_text(s_panel, PM_W, PM_H, bx + 212, fy + 16, "SELECT+START",
-                       PM_COL_DIM, 1);
+    pm_text(bx + 140, fy + 16,
+            s_confirming ? "NO" : "RESUME", PM_COL_TEXT, 1);
+    pm_text(bx + 212, fy + 16, "SELECT+START",
+            PM_COL_DIM, 1);
   }
   s_dirty = 0;
 }
