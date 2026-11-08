@@ -224,6 +224,17 @@ static int bridge_read_is_stable(uint32_t adr) {
     return cart_getRomPtr(g_snes->cart, bank, a) != NULL;
 }
 
+/* RDNMI ($4210) and HVBJOY ($4212) report the beam, which normally moves
+ * once per opcode, after it ran: walk it to this access first (see the
+ * byte path below). */
+static void bridge_sync_beam_for_status_read(CpuState *cpu, uint32_t adr) {
+    const uint8_t bank = (uint8_t)(adr >> 16);
+    if (s_interp_bus_timing_active && g_snes &&
+        ((uint16_t)adr == 0x4210 || (uint16_t)adr == 0x4212) &&
+        (bank < 0x40 || (bank >= 0x80 && bank < 0xC0)))
+        snes_sync_master_clock(g_snes, cpu->master_cycles +
+                                           SNES_CPU_CLOCKS(s_interp_bus_master));
+}
 static uint8_t bridge_bus_read(void *mem, uint32_t adr) {
     CpuState *cpu = (CpuState *)mem;
     bridge_timing_bus(adr);
@@ -238,11 +249,11 @@ static uint8_t bridge_bus_read(void *mem, uint32_t adr) {
      * handler's own $4210 acknowledge cleared the latch first. Spider-Man
      * ($81:FA25) hung on black after the title that way; on hardware the read
      * wins whenever the edge lands before its read cycle. Walk the beam to
-     * this access first. The opcode's closing sync walks the rest. */
-    if (s_interp_bus_timing_active && g_snes && (uint16_t)adr == 0x4210 &&
-        ((adr >> 16) < 0x40 || ((adr >> 16) >= 0x80 && (adr >> 16) < 0xC0)))
-        snes_sync_master_clock(g_snes, cpu->master_cycles +
-                                           SNES_CPU_CLOCKS(s_interp_bus_master));
+     * this access first. The opcode's closing sync walks the rest.
+     * HVBJOY ($4212) the same way: Spider-Man's pause ($81:9950, `BIT $4212
+     * / BEQ` with NMI on) only ever read it on the pre-edge side, and the
+     * NMI handler then ran past V=261, so the wait never ended. */
+    bridge_sync_beam_for_status_read(cpu, adr);
     uint8_t value=cpu_read8(cpu,(uint8)((adr>>16)&0xff),(uint16)adr);
     if (continuous) {
         BridgeDynamicValue *d=&s_bridge_dynamic_values[(adr^(adr>>8)^(adr>>16))&63];
@@ -340,12 +351,15 @@ static int bridge_hw_word(uint32_t adrl, uint32_t adrh) {
 static bool bridge_bus_read_word(void *mem, uint32_t adrl, uint32_t adrh,
                                  uint16_t *out) {
     if (!bridge_hw_word(adrl, adrh)) return false;
+    CpuState *cpu = (CpuState *)mem;
     bridge_timing_bus(adrl);
+    /* The low byte's read cycle samples the status registers (a 16-bit
+     * `BIT $4212`, Spider-Man's pause wait at $81:9950). */
+    bridge_sync_beam_for_status_read(cpu, adrl);
     bridge_timing_bus(adrh);
     s_interp_volatile_read_epoch++;  /* a claimed word is always MMIO */
     if (bridge_continuous_read(adrl) || bridge_continuous_read(adrh))
         s_interp_continuous_read_epoch++;
-    CpuState *cpu = (CpuState *)mem;
     const int is_apu_port = bridge_is_apu_port(adrl);
     if (is_apu_port) bridge_apu_flush(cpu);
     *out = cpu_read16(cpu, (uint8)((adrl >> 16) & 0xFF), (uint16)(adrl & 0xFFFF));
