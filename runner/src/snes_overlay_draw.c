@@ -61,6 +61,30 @@ void snes_ovl_stroke_rect(uint32_t *dst, int stride, int h_max,
     snes_ovl_fill_rect(dst, stride, h_max, x + w - 1, y, 1, h, col);
 }
 
+/* A colour with alpha below 255 is laid over what is already there
+ * (src-over), so a style's translucent fill darkens its own background
+ * instead of cutting a see-through hole in the panel. */
+void snes_ovl_blend_rect(uint32_t *dst, int stride, int h_max, int x0, int y0, int w, int h,
+                       uint32_t col)
+{
+    const uint32_t a = col >> 24, na = 255u - a;
+    int x, y;
+    for (y = y0; y < y0 + h; y++) {
+        if (y < 0 || y >= h_max) continue;
+        for (x = x0; x < x0 + w; x++) {
+            uint32_t d, da, r, g, b;
+            if (x < 0 || x >= stride) continue;
+            d = dst[y * stride + x];
+            da = d >> 24;
+            r = (((col >> 16) & 255) * a + ((d >> 16) & 255) * na) / 255;
+            g = (((col >> 8) & 255) * a + ((d >> 8) & 255) * na) / 255;
+            b = ((col & 255) * a + (d & 255) * na) / 255;
+            da = a + da * na / 255;
+            dst[y * stride + x] = da << 24 | r << 16 | g << 8 | b;
+        }
+    }
+}
+
 void snes_ovl_fill_disc(uint32_t *dst, int stride, int h_max,
                         int cx, int cy, int r, uint32_t col)
 {

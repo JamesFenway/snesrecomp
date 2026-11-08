@@ -79,6 +79,11 @@ void snes_ovl_upscale_frame(uint8_t *dst, int pitch, int dst_w, int dst_h,
 
 void snes_ovl_fill_rect(uint32_t *dst, int stride, int h_max,
                         int x0, int y0, int w, int h, uint32_t col);
+/* fill_rect for a colour with alpha below 255: laid over what is there
+ * (src-over), so a translucent fill darkens a panel instead of cutting a
+ * see-through hole in it. */
+void snes_ovl_blend_rect(uint32_t *dst, int stride, int h_max,
+                         int x0, int y0, int w, int h, uint32_t col);
 void snes_ovl_stroke_rect(uint32_t *dst, int stride, int h_max,
                           int x, int y, int w, int h, uint32_t col);
 void snes_ovl_fill_disc(uint32_t *dst, int stride, int h_max,
