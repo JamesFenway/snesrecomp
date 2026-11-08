@@ -115,6 +115,30 @@ static void run_interrupt(uint32_t vector, uint64_t deadline) {
   update_resume_pc();
 }
 
+/* Does the parked CPU's next instruction read RDNMI ($4210)? LDA/BIT abs
+ * through an I/O data bank, or LDA long into an I/O bank. */
+static bool io_bank(uint8_t bank) {
+  return bank < 0x40u || (bank >= 0x80u && bank < 0xC0u);
+}
+static bool parked_on_rdnmi_read(void) {
+  const uint32_t pc = s_resume_pc;
+  const uint8_t bank = (uint8_t)(pc >> 16);
+  uint8_t op, lo, hi;
+  if (!pc || !io_bank(bank) || (pc & 0xFFFFu) > 0xFFFCu ||
+      (pc & 0xFFFFu) < 0x8000u)
+    return false; /* only ROM code: peeking RAM/MMIO could have side effects */
+  op = snes_read(g_snes, pc);
+  lo = snes_read(g_snes, pc + 1u);
+  hi = snes_read(g_snes, pc + 2u);
+  if (lo != 0x10u || hi != 0x42u)
+    return false;
+  if (op == 0xADu || op == 0x2Cu) /* LDA abs, BIT abs */
+    return io_bank(g_cpu.DB);
+  if (op == 0xAFu) /* LDA long */
+    return (pc & 0xFFFFu) <= 0xFFFBu && io_bank(snes_read(g_snes, pc + 3u));
+  return false;
+}
+
 /* RtlStateGeneration() at the last frame: it moves on a reset or a savestate
  * load (a jump the player sees) and deliberately not on a rollback. */
 static uint64_t s_seen_generation;
@@ -164,6 +188,22 @@ void snes_beam_frame_driver_run_frame(void) {
   /* NMITIMEN gates NMI; nothing is delivered before reset has run, since
    * there is no instruction stream to interrupt yet. */
   if (!booting && g_snes->nmiEnabled) {
+    /* A CPU parked on an `LDA $4210 / BPL` vblank wait idles through the
+     * V=225 edge, and the NMI handler's own $4210 acknowledge then cleared
+     * the latch before the poll ever read it -- every field, since the poll
+     * parks at the same beam phase each time. On hardware the spinning CPU
+     * is mid-loop at the edge, and its read wins whenever the read cycle
+     * falls before the NMI is taken. Let that read happen first: run the
+     * one instruction (the deadline stops the bridge at the next opcode),
+     * then take the NMI behind it. Spider-Man ($81:FA25) stayed black for
+     * good after its attract demo this way. */
+    if (!s_wai_halted && !g_snes->inIrq && parked_on_rdnmi_read()) {
+      interp_bridge_set_master_deadline(g_cpu.master_cycles + 1u);
+      (void)interp_bridge_run_until_quiescent(&g_cpu, s_resume_pc);
+      interp_bridge_set_master_deadline(0);
+      update_resume_pc();
+      (void)interp_bridge_lle_took_wai();
+    }
     g_snes->inNmi = true;
     s_wai_halted = false;
     run_interrupt(nmi_vector(), frame_end);
