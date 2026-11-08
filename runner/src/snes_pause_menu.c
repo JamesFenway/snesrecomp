@@ -389,7 +389,8 @@ void snes_pause_menu_set_style(const SnesPauseMenuStyle *style)
  * cursor through its callbacks when it has them. */
 static void pm_fill(int x, int y, int w, int h, uint32_t col)
 {
-  if (col >> 24) snes_ovl_fill_rect(s_panel, PM_W, PM_H, x, y, w, h, col);
+  if ((col >> 24) == 0xFFu) snes_ovl_fill_rect(s_panel, PM_W, PM_H, x, y, w, h, col);
+  else if (col >> 24) snes_ovl_blend_rect(s_panel, PM_W, PM_H, x, y, w, h, col);
 }
 
 static void pm_stroke(int x, int y, int w, int h, uint32_t col)

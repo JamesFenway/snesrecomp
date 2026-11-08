@@ -31,6 +31,7 @@
 
 #include "snes_savestate_menu.h"
 #include "snes_overlay_draw.h"
+#include "snes_pause_menu.h"
 #include "snes_osd.h"
 #include "netplay/snes_netplay.h"
 
@@ -276,11 +277,142 @@ static void format_slot_status(int slot, char *out, size_t cap)
 
 /* ── Panel ─────────────────────────────────────────────────────────────── */
 
+/* A game's look (snes_savestate_menu_set_style), the same style the pause
+ * menu takes. NULL = the stock panel below, unchanged. */
+static const SnesPauseMenuStyle *s_style;
+
+void snes_savestate_menu_set_style(const SnesPauseMenuStyle *style)
+{
+    s_style = style;
+    s_dirty = 1;
+}
+
+static void st_fill(int x, int y, int w, int h, uint32_t col)
+{
+    if ((col >> 24) == 0xFFu) fill_rect(s_panel, x, y, w, h, col);
+    else if (col >> 24) snes_ovl_blend_rect(s_panel, SSM_W, SSM_H, x, y, w, h, col);
+}
+
+static void st_stroke(int x, int y, int w, int h, uint32_t col)
+{
+    if (col >> 24) stroke_rect(s_panel, x, y, w, h, col);
+}
+
+static void st_text(int x, int y, const char *s, uint32_t col, int scale)
+{
+    if (!(col >> 24)) return;
+    if (s_style->text) s_style->text(s_panel, SSM_W, SSM_H, x, y, s, col, scale);
+    else draw_text(s_panel, x, y, s, col, scale);
+}
+
+/* The same layout as the stock panel, drawn through the style: its
+ * background and box decoration over the whole panel, its text, its
+ * cursor under the selected slot's name. */
+static void rasterize_panel_styled(void)
+{
+    const SnesPauseMenuStyle *st = s_style;
+    int i, first;
+    char buf[96];
+
+    for (i = 0; i < SSM_W * SSM_H; i++)
+        s_panel[i] = st->col_bg | 0xFF000000u;   /* the browser is opaque */
+    if (st->box) st->box(s_panel, SSM_W, SSM_H, 0, 0, SSM_W, SSM_H);
+    st_fill(0, 0, SSM_W, 40, st->col_head);
+    st_text(20, 12,
+            s_mode == SNES_SSM_MODE_SAVE ? "SAVE GAME"
+            : s_mode == SNES_SSM_MODE_LOAD ? "LOAD GAME" : "SAVE STATES",
+            st->col_accent, 2);
+    if (s_mode == SNES_SSM_MODE_BOTH)
+        st_text(384, 16, "SELECT+R MENU", st->col_dim, 1);
+
+    if (!s_thumbs_scanned)
+        refresh_thumbs();
+
+    first = s_selected - 1;
+    if (first < 0) first = 0;
+    if (first > slot_count() - SSM_VISIBLE_ROWS)
+        first = slot_count() - SSM_VISIBLE_ROWS;
+    snprintf(buf, sizeof(buf), "%02d-%02d / %02d",
+             first + 1, first + SSM_VISIBLE_ROWS, slot_count());
+    st_text(20, 42, buf, st->col_dim, 1);
+
+    for (i = first; i < first + SSM_VISIBLE_ROWS; i++) {
+        int visible = i - first;
+        int y = SSM_ROWS_Y + visible * (SSM_ROW_H + SSM_ROW_GAP);
+        int sel = (i == s_selected);
+        uint32_t fg = sel ? st->col_accent : st->col_text;
+
+        if (sel) {
+            st_fill(SSM_ROWS_X, y, SSM_ROWS_W, SSM_ROW_H, st->col_sel_bg);
+            /* The row keeps a frame like the others, in the accent unless
+             * the style names a selection edge. */
+            st_stroke(SSM_ROWS_X, y, SSM_ROWS_W, SSM_ROW_H,
+                      (st->col_sel_edge >> 24) ? st->col_sel_edge : st->col_accent);
+        } else {
+            st_stroke(SSM_ROWS_X, y, SSM_ROWS_W, SSM_ROW_H, st->col_edge);
+        }
+
+        if (i == SNES_SAVESTATE_QUICK_SLOT) snprintf(buf, sizeof(buf), "QUICK");
+        else snprintf(buf, sizeof(buf), "SLOT %02d", i + 1);
+        st_text(SSM_ROWS_X + 12, y + 14, buf, fg, 1);
+        if (sel && st->cursor)
+            st->cursor(s_panel, SSM_W, SSM_H, SSM_ROWS_X + 16, y + 40, 26);
+
+        if (s_have_thumb[i]) {
+            blit_thumb(s_panel, SSM_ROWS_X + 88, y + 3,
+                       SSM_TILE_W, SSM_TILE_H, s_thumbs[i]);
+        } else {
+            fill_rect(s_panel, SSM_ROWS_X + 88, y + 3,
+                      SSM_TILE_W, SSM_TILE_H, 0xFF000000u);
+            st_text(SSM_ROWS_X + 122, y + 46,
+                    slot_exists(i) ? "SAVED" : "NEW", st->col_dim, 1);
+        }
+        st_stroke(SSM_ROWS_X + 88, y + 3, SSM_TILE_W, SSM_TILE_H,
+                  sel ? st->col_accent : st->col_edge);
+
+        format_slot_status(i, buf, sizeof(buf));
+        st_text(SSM_ROWS_X + 222, y + 42, buf, fg, 1);
+        if (sel)
+            st_text(SSM_ROWS_X + SSM_ROWS_W - 72, y + 84, "SELECT", st->col_accent, 1);
+    }
+
+    st_fill(0, 388, SSM_W, SSM_H - 388, st->col_head);
+    if (s_mode != SNES_SSM_MODE_BOTH) {
+        draw_snes_button(s_panel, 20, 398, 'A', 0xFF6BE06Bu);
+        st_text(44, 402, s_mode == SNES_SSM_MODE_SAVE ? "SAVE" : "LOAD", st->col_text, 1);
+        draw_snes_button(s_panel, 116, 398, 'B', 0xFFFF6B6Bu);
+        st_text(140, 402, "BACK", st->col_text, 1);
+        st_text(316, 402, "UP DOWN SLOT", st->col_dim, 1);
+        st_text(20, 422, "KEYS: ARROWS SLOT  X CHOOSE  ESC BACK  Q QUICK", st->col_dim, 1);
+    } else {
+        draw_snes_button(s_panel, 20, 398, 'A', 0xFF6BE06Bu);
+        st_text(44, 402, "LOAD", st->col_text, 1);
+        draw_snes_button(s_panel, 116, 398, 'X', 0xFF5FA8FFu);
+        st_text(140, 402, "SAVE", st->col_text, 1);
+        draw_snes_button(s_panel, 212, 398, 'B', 0xFFFF6B6Bu);
+        st_text(236, 402, "BACK", st->col_text, 1);
+        st_text(316, 402, "UP DOWN SLOT", st->col_dim, 1);
+        if (s_mirror)
+            st_text(20, 422, "NETPLAY: THE HOST CONTROLS THIS MENU", st->col_dim, 1);
+        else
+            st_text(20, 422, "KEYS: ARROWS SLOT  X LOAD  S SAVE  ESC BACK  Q QUICK",
+                    st->col_dim, 1);
+    }
+    if (s_status[0])
+        st_text(20, 436, s_status, st->col_accent, 1);
+
+    s_dirty = 0;
+}
+
 static void rasterize_panel(void)
 {
     int i, first;
     char buf[96];
 
+    if (s_style) {
+        rasterize_panel_styled();
+        return;
+    }
     for (i = 0; i < SSM_W * SSM_H; i++)
         s_panel[i] = 0xFF0F1118u;
 

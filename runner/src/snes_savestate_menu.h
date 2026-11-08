@@ -103,6 +103,14 @@ void snes_savestate_menu_viewport(int width, int height,
 typedef int (*SnesSavestateComposeFn)(uint32_t *dst, size_t cap, int *w, int *h);
 void snes_savestate_menu_set_compose(SnesSavestateComposeFn compose);
 
+/* A game's own look for the browser: the same style the pause menu takes
+ * (snes_pause_menu.h). The layout stays; the style's background and box
+ * decoration fill the panel (which stays opaque), its text callback draws
+ * the text and its cursor marks the selected slot. Thumbnails and the face
+ * buttons are drawn as before. NULL = the stock panel. */
+struct SnesPauseMenuStyle;
+void snes_savestate_menu_set_style(const struct SnesPauseMenuStyle *style);
+
 /* The rasterized panel, ARGB8888, SNES_SSM_W x SNES_SSM_H. Returns 0 and
  * nulls the outputs when the menu is closed. */
 int  snes_savestate_menu_overlay_image(const uint32_t **pixels, int *w, int *h);
