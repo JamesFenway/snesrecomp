@@ -241,6 +241,21 @@ int main(void) {
     CHECK(g_style_box == 1 && g_style_text > 3 && g_style_cursor == 1);
     CHECK(px[(h / 2) * w + w / 2] == 0);   /* no fill, nothing drawn there */
     snes_pause_menu_close();
+    /* Alpha-0 text is skipped, not drawn as holes. */
+    {
+      static const SnesPauseMenuStyle hidden = {
+        .col_bg = 0xFF112233u, .col_accent = 0, .col_text = 0, .col_dim = 0,
+      };
+      int y, x, holes = 0;
+      snes_pause_menu_set_style(&hidden);
+      snes_pause_menu_open();
+      CHECK(snes_pause_menu_overlay_image(&px, &w, &h));
+      for (y = h / 2 - 60; y < h / 2 + 60; y++)
+        for (x = w / 2 - 100; x < w / 2 + 100; x++)
+          holes += px[y * w + x] != 0xFF112233u;
+      CHECK(holes == 0);
+      snes_pause_menu_close();
+    }
     snes_pause_menu_set_style(NULL);
     snes_pause_menu_open();
     CHECK(snes_pause_menu_overlay_image(&px, &w, &h));

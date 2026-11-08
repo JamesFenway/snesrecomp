@@ -399,6 +399,7 @@ static void pm_stroke(int x, int y, int w, int h, uint32_t col)
 
 static void pm_text(int x, int y, const char *s, uint32_t col, int scale)
 {
+  if (!(col >> 24)) return;
   if (s_style->text) s_style->text(s_panel, PM_W, PM_H, x, y, s, col, scale);
   else snes_ovl_draw_text(s_panel, PM_W, PM_H, x, y, s, col, scale);
 }
@@ -613,7 +614,7 @@ static void rasterize(void)
                   PM_COL_SEL_EDGE);
         if (s_style->cursor)
           s_style->cursor(s_panel, PM_W, PM_H, bx + 14, ry, PM_ROW_H - 4);
-        else
+        else if (PM_COL_GOLD >> 24)
           snes_ovl_fill_disc(s_panel, PM_W, PM_H, bx + 30, ry + 15, 4, PM_COL_GOLD);
       }
       pm_text(bx + 48, ry + 7, s_items[i].label,
