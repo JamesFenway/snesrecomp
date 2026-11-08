@@ -32,6 +32,18 @@ static void nav(uint32_t word, uint32_t *t) {
   snes_pause_menu_poll_nav(0, (*t)++);
 }
 
+/* A game style: counts its callbacks. */
+static int g_style_box, g_style_text, g_style_cursor;
+static void style_box(uint32_t *p, int s, int h, int x, int y, int w, int bh) {
+  (void)p; (void)s; (void)h; (void)x; (void)y; (void)w; (void)bh; g_style_box++;
+}
+static void style_text(uint32_t *p, int s, int h, int x, int y, const char *t, uint32_t c, int sc) {
+  (void)p; (void)s; (void)h; (void)x; (void)y; (void)t; (void)c; (void)sc; g_style_text++;
+}
+static void style_cursor(uint32_t *p, int s, int h, int x, int y, int rh) {
+  (void)p; (void)s; (void)h; (void)x; (void)y; (void)rh; g_style_cursor++;
+}
+
 /* A fake OPTIONS source: heading, VOLUME, heading, a feature whose option
  * row exists only while the feature is on. */
 static int g_volume = 50, g_feature, g_choice, g_changes;
@@ -213,6 +225,44 @@ int main(void) {
   nav(SNES_PAD_A, &t);
   CHECK(snes_pause_menu_take_action() == SNES_PAUSE_SAVE);
   snes_pause_menu_close();
+
+  /* A style: its callbacks draw, alpha-0 colours are skipped, and NULL
+   * puts the stock look back. */
+  {
+    static const SnesPauseMenuStyle style = {
+      .col_bg = 0, .col_head = 0, .col_edge = 0, .col_accent = 0xFF102030u,
+      .col_text = 0xFF405060u, .col_dim = 0xFF708090u,
+      .box = style_box, .text = style_text, .cursor = style_cursor,
+    };
+    const uint32_t *px; int w, h;
+    snes_pause_menu_set_style(&style);
+    snes_pause_menu_open();
+    CHECK(snes_pause_menu_overlay_image(&px, &w, &h));
+    CHECK(g_style_box == 1 && g_style_text > 3 && g_style_cursor == 1);
+    CHECK(px[(h / 2) * w + w / 2] == 0);   /* no fill, nothing drawn there */
+    snes_pause_menu_close();
+    /* Alpha-0 text is skipped, not drawn as holes. */
+    {
+      static const SnesPauseMenuStyle hidden = {
+        .col_bg = 0xFF112233u, .col_accent = 0, .col_text = 0, .col_dim = 0,
+      };
+      int y, x, holes = 0;
+      snes_pause_menu_set_style(&hidden);
+      snes_pause_menu_open();
+      CHECK(snes_pause_menu_overlay_image(&px, &w, &h));
+      for (y = h / 2 - 60; y < h / 2 + 60; y++)
+        for (x = w / 2 - 100; x < w / 2 + 100; x++)
+          holes += px[y * w + x] != 0xFF112233u;
+      CHECK(holes == 0);
+      snes_pause_menu_close();
+    }
+    snes_pause_menu_set_style(NULL);
+    snes_pause_menu_open();
+    CHECK(snes_pause_menu_overlay_image(&px, &w, &h));
+    CHECK(px[(h / 2) * w + w / 2] >> 24 == 0xFF);
+    CHECK(g_style_box == 1);
+    snes_pause_menu_close();
+  }
 
   puts(g_fail ? "pause_menu: FAIL" : "pause_menu: ok");
   return g_fail;
