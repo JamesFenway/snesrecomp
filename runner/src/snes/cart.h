@@ -22,6 +22,10 @@ struct Cart {
 
   uint8_t* rom;
   uint32_t romSize;
+  /* romSize - 1 when romSize is a power of two, else 0: a ROM offset wraps
+   * with a mask instead of a division on the hot read path
+   * (cart_getRomPtr). Derived in cart_load, never saved. */
+  uint32_t romMask;
   /* Headerless source bytes, before power-of-two bus mirroring. Host metadata. */
   uint32_t romImageSize;
   uint8_t* ram;
@@ -43,6 +47,12 @@ struct Cart {
 #define CART_DSP1_HIROM   6
 #define CART_SA1          7
 #define CART_SDD1 8
+
+/* off wrapped into the image: a mask for a power-of-two ROM (every LoROM /
+ * HiROM dump the framework mirrors), the general modulo otherwise. */
+static inline uint32_t cart_rom_index(const Cart *cart, uint32_t off) {
+  return cart->romMask ? off & cart->romMask : off % cart->romSize;
+}
 
 static inline bool cart_has_sa1(const Cart *cart) {
   return cart && cart->type == CART_SA1 && cart->sa1;

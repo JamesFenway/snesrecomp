@@ -26,6 +26,7 @@ Cart* cart_init(Snes* snes) {
   cart->type = 0;
   cart->rom = NULL;
   cart->romSize = 0;
+  cart->romMask = 0;
   cart->ram = NULL;
   cart->ramSize = 0;
   cart->masterClock = &snes->beamMasterLast;
@@ -84,6 +85,7 @@ void cart_load(Cart* cart, int type, uint8_t* rom, int romSize, int ramSize) {
   if(cart->ram != NULL) free(cart->ram);
   cart->rom = malloc(romSize);
   cart->romSize = romSize;
+  cart->romMask = romSize > 1 && (romSize & (romSize - 1)) == 0 ? (uint32_t)romSize - 1 : 0;
   cart->romImageSize = romSize;
   if(ramSize > 0) {
     cart->ram = malloc(ramSize);
@@ -209,10 +211,10 @@ case CART_CX4: {
               static unsigned long n;
               if (n++ < 2000000)
                 fprintf(stderr, "[romptr] pc=%06X bank=%02X adr=%04X off=%06X val=%02X\n",
-                        (unsigned)g_interp816_cur_pc, bank, adr, off, cart->rom[off % cart->romSize]);
+                        (unsigned)g_interp816_cur_pc, bank, adr, off, cart->rom[cart_rom_index(cart, off)]);
             }
 #endif
-            return &cart->rom[off % cart->romSize];
+            return &cart->rom[cart_rom_index(cart, off)];
           }
         }
         return NULL;
@@ -223,7 +225,7 @@ case CART_CX4: {
       if (cart->sdd1) {
         uint32_t off2 = sdd1_lorom_window_offset(cart->sdd1, bank, adr);
         if (off2 != UINT32_MAX)
-          return &cart->rom[off2 % cart->romSize];
+          return &cart->rom[cart_rom_index(cart, off2)];
       }
       /* Legacy LoROM mapping for the remaining banks (40-7F, or no chip) */
       uint8_t canonical = bank & 0x7f;
@@ -236,7 +238,7 @@ case CART_CX4: {
     default:
       return NULL;
   }
-  return &cart->rom[off % cart->romSize];
+  return &cart->rom[cart_rom_index(cart, off)];
 }
 
 uint8_t cart_read(Cart* cart, uint8_t bank, uint16_t adr) {

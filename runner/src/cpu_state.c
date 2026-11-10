@@ -431,6 +431,16 @@ uint8 cpu_read8(CpuState *cpu, uint8 bank, uint16 addr) {
         cpu_hw_log(addr, 1, 0);
         return cpu_latch_read8(cpu, ReadRegOpenBus(addr, cpu->open_bus));
     }
+    /* Plain LoROM, $8000-$FFFF of any bank but WRAM's (handled above): ROM,
+     * exactly what the RomPtr fallthrough below resolves, without the
+     * coprocessor-window, SRAM and map walks. Every interpreted opcode
+     * fetch comes through here. */
+    if (addr >= 0x8000 && g_snes && g_snes->cart &&
+        g_snes->cart->type == CART_LOROM && g_snes->cart->rom) {
+        const Cart *c = g_snes->cart;
+        const uint32_t rom_off = ((uint32_t)(bank & 0x7f) << 15) | (addr & 0x7fff);
+        return cpu_latch_read8(cpu, c->rom[cart_rom_index(c, rom_off)]);
+    }
     if (g_snes && g_snes->cart && g_snes->cart->type == CART_SUPERFX)
         return cpu_latch_read8(cpu, cart_read(g_snes->cart, bank, addr));
     if (g_snes && g_snes->cart && g_snes->cart->type == CART_SA1)

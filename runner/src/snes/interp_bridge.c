@@ -220,6 +220,10 @@ static int bridge_read_is_stable(uint32_t adr) {
     if (system && a < 0x2000) return 1;
     if (system && a < 0x8000) return 0;
     if (!g_snes || !g_snes->cart) return 0;
+    /* Plain LoROM: every system-bank address from $8000 is ROM (what
+     * cart_getRomPtr answers there), and this runs on every interpreted
+     * read -- opcode fetches included -- so skip the full map walk. */
+    if (system && g_snes->cart->type == CART_LOROM) return 1;
     if (g_snes->cart->type == CART_SDD1 && bank >= 0xC0) return 0;
     return cart_getRomPtr(g_snes->cart, bank, a) != NULL;
 }
