@@ -271,6 +271,20 @@ void snes_rewind_commit(void) {
 
 void snes_rewind_close(void) { s_open = 0; s_sel = 0; }
 
+int snes_rewind_preview(void) {
+    RwSlot *slot = slot_at(s_sel);
+    if (!s_open || !slot || !slot->valid) return 0;
+    if (!RtlLoadSnapshotFromMemory(slot->blob, slot->len)) {
+        fprintf(stderr, "[snes_rewind] snapshot %d refused for preview\n", s_sel);
+        return 0;
+    }
+    return 1;
+}
+
+int snes_rewind_remaining(void) {
+    return s_open ? s_count - 1 - s_sel : 0;
+}
+
 /* ---- filmstrip ---------------------------------------------------------- */
 
 /*

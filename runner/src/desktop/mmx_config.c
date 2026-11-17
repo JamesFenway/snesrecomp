@@ -92,6 +92,16 @@ void ConfigUseInGameLauncherDefaults(void) {
 void ConfigUsePauseMenuDefaults(void) {
   kDefaultKbdControls[kKeys_PauseMenu] = _(SDLK_ESCAPE);
 }
+/* Backspace collides with nothing in the table above (the pause menu reads
+ * it only while open). The pad default, L2, is added after parsing unless
+ * [GamepadMap] names "RewindHold" itself (an empty value = no pad button):
+ * the SNES pad has no trigger, so L2 is free on every default mapping. */
+static bool s_rewind_hold_defaults;
+static bool s_rewind_hold_pad_seen;
+void ConfigUseRewindHoldDefaults(void) {
+  s_rewind_hold_defaults = true;
+  kDefaultKbdControls[kKeys_RewindHold] = _(SDLK_BACKSPACE);
+}
 #undef _
 #undef A
 #undef C
@@ -112,6 +122,7 @@ static const KeyNameId kKeyNameId[] = {
   S(Fullscreen), S(Reset),
   S(Pause), S(PauseDimmed), S(Turbo), S(WindowBigger), S(WindowSmaller), S(VolumeUp), S(VolumeDown), S(DisplayPerf), S(ToggleRenderer), S(ToggleWidescreen),
   S(SaveStateMenu), S(Rewind), S(Screenshot), S(OpenLauncher), S(PauseMenu),
+  S(RewindHold),
 };
 #undef S
 #undef M
@@ -321,8 +332,8 @@ static void ParseGamepadArray(int gamepad, char *value, int cmd, int size) {
   char *s;
   int i = 0;
   for (; i < size && (s = NextDelim(&value, ',')) != NULL; i++, cmd += (cmd != 0)) {
-    if (*s == 0)
-      continue;
+    if (*s == 0 || StringEqualsNoCase(s, "none"))
+      continue;   /* "none": deliberately unbound (the launcher's Off) */
     int gamepad_cur = gamepad;
     uint32 modifiers = 0;
     const char *ss = s;
@@ -345,6 +356,12 @@ static void ParseGamepadArray(int gamepad, char *value, int cmd, int size) {
   }
 }
 
+/* [GamepadMap] RewindHold, default L2 (see ConfigUseRewindHoldDefaults). */
+static void RegisterDefaultRewindHoldPad(void) {
+  if (s_rewind_hold_defaults && !s_rewind_hold_pad_seen)
+    GamepadMap_Add(kGamepadBtn_L2, 0, kKeys_RewindHold);
+}
+
 static void RegisterDefaultKeys(void) {
   for (int i = 1; i < countof(kKeyNameId); i++) {
     if (!has_keynameid[i]) {
@@ -361,6 +378,7 @@ static void RegisterDefaultKeys(void) {
     for (int i = 0; i < countof(kDefaultGamepadCmds); i++)
       GamepadMap_Add(kDefaultGamepadCmds[i] + kGamepadBtn_Count, 0, kKeys_ControlsP2 + i);
   }
+  RegisterDefaultRewindHoldPad();
 }
 
 static int GetIniSection(const char *s) {
@@ -465,6 +483,7 @@ static bool HandleIniConfig(int section, const char *key, char *value) {
         if (StringEqualsNoCase(key, kKeyNameId[i].name)) {
           int id = kKeyNameId[i].id;
           has_assigned_joypad_controls |= (id == kKeys_Controls) ? 1 : (id == kKeys_ControlsP2) ? 2 : 0;
+          if (id == kKeys_RewindHold) s_rewind_hold_pad_seen = true;
           ParseGamepadArray(id == kKeys_ControlsP2 ? 1 : 0, value, kKeyNameId[i].id, kKeyNameId[i].size);
           return true;
         }
@@ -789,6 +808,7 @@ void ConfigReloadGamepadMap(const char *filename) {
   joymap_ents = NULL;
   joymap_size = 0;
   has_assigned_joypad_controls = 0;
+  s_rewind_hold_pad_seen = false;
 
   ReloadSection(filename, "[GamepadMap]", 5, true);
 
@@ -801,6 +821,7 @@ void ConfigReloadGamepadMap(const char *filename) {
     for (int i = 0; i < countof(kDefaultGamepadCmds); i++)
       GamepadMap_Add(kDefaultGamepadCmds[i] + kGamepadBtn_Count, 0, kKeys_ControlsP2 + i);
   }
+  RegisterDefaultRewindHoldPad();
 }
 
 /* ---------------------------------------------------------------------------

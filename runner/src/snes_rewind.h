@@ -82,6 +82,17 @@ void snes_rewind_commit(void);
 /* Leave without changing the machine. */
 void snes_rewind_close(void);
 
+/* Hold-to-rewind (the host's RewindHold button) drives the same selection
+ * without the filmstrip: open(), then each step back step(-1) + preview(),
+ * and commit() on release. preview() loads the selected snapshot but stays
+ * open, so the host can run one silent frame from it for the picture; the
+ * ring is not touched (no captures while open) and commit() loads the same
+ * snapshot again, so that preview frame never becomes part of the game.
+ * Returns 0 when the snapshot was refused (the machine is untouched). */
+int snes_rewind_preview(void);
+/* Snapshots behind the selection: 0 = at the oldest one, nothing further. */
+int snes_rewind_remaining(void);
+
 /* How far back the selection sits, in emulated seconds, for the caption. */
 float snes_rewind_selected_seconds(void);
 

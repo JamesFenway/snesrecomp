@@ -408,6 +408,7 @@ static struct RendererFuncs g_renderer_funcs;
 /* Set by the hotkeys; consumed once in the frame loop. */
 static int g_savestate_menu_hotkey;
 static int g_rewind_hotkey;
+static int g_rewind_hold_key;        /* rewind_hold only: RewindHold is down */
 static int g_open_launcher_hotkey;   /* in_game_launcher only */
 static int g_pause_menu_hotkey;      /* pause_menu only */
 /* BACK TO MENU: frames left to run uncapped after the reset, until the
@@ -2258,6 +2259,119 @@ static void RunRewindLoop(bool *running) {
   GameReset();
 }
 
+/* Hold-to-rewind (SnesDesktopHostGame.rewind_hold). While RewindHold is
+ * down the main loop calls this instead of running a frame: every second
+ * call steps one snapshot back (snapshots are 6 frames apart by default, so
+ * 3x speed; 6x after two seconds of holding), loads it and runs one silent
+ * frame from it for the picture. The preview frame's audio is thrown away
+ * and nothing is captured into the ring while it is open. On release the
+ * selected snapshot is committed: loaded again, the snapshots after it
+ * dropped, and the game plays on from exactly the moment that was shown.
+ *
+ * SNESRECOMP_REWIND_HOLD_SELFTEST=<frame>:<calls> holds it for that many
+ * calls at that frame, for headless checks.
+ * Returns true when it handled this iteration (no normal frame to run). */
+static int g_rewind_hold_active;
+static unsigned g_rewind_hold_calls;
+static int g_rewind_hold_refused;    /* "nothing to rewind" said for this hold */
+static long g_rewind_hold_selftest = -1;
+
+static void RewindHoldCaption(void) {
+  char buf[48];
+  float secs = snes_rewind_selected_seconds();
+  int whole = (int)secs, tenths = (int)((secs - (float)whole) * 10.0f + 0.5f);
+  if (tenths > 9) { whole += 1; tenths = 0; }
+  snprintf(buf, sizeof(buf), "<< REWIND -%d.%ds%s", whole, tenths,
+           snes_rewind_remaining() ? "" : " (oldest)");
+  snes_osd_push(buf, 250);
+}
+
+static bool RewindHoldTick(unsigned frame_ctr) {
+  static long selftest_at = -2, selftest_calls;
+  if (selftest_at == -2) {
+    const char *v = HostGetenv("REWIND_HOLD_SELFTEST");
+    selftest_at = -1;
+    if (v) {
+      char *colon = NULL;
+      selftest_at = strtol(v, &colon, 0);
+      selftest_calls = (colon && *colon == ':') ? strtol(colon + 1, NULL, 0) : 120;
+    }
+  }
+  if (selftest_at >= 0 && (long)frame_ctr == selftest_at && g_rewind_hold_selftest < 0) {
+    fprintf(stderr, "[rewind_hold_selftest] holding for %ld calls at frame %u\n",
+            selftest_calls, frame_ctr);
+    g_rewind_hold_selftest = selftest_calls;
+    selftest_at = -1;
+  }
+  bool held = g_rewind_hold_key || g_rewind_hold_selftest > 0;
+  if (g_rewind_hold_selftest > 0) g_rewind_hold_selftest--;
+
+  if (!g_game->rewind_hold) return false;
+  if (!held) {
+    g_rewind_hold_refused = 0;
+    if (!g_rewind_hold_active) return false;
+    /* Let go: play on from the moment on screen. */
+    snes_rewind_commit();
+    g_rewind_hold_active = 0;
+    g_state_generation = RtlStateGeneration();
+    ResetAudioTimeline();
+    SetAudioPaused(g_paused);
+    host_report_breadcrumb("rewind hold released after %u steps", g_rewind_hold_calls);
+    if (g_rewind_hold_selftest == 0) {
+      fprintf(stderr, "[rewind_hold_selftest] released at frame %u, %u calls\n",
+              frame_ctr, g_rewind_hold_calls);
+      g_rewind_hold_selftest = -1;
+    }
+    GameReset();
+    return false;   /* this iteration runs the first frame from there */
+  }
+  if (!g_rewind_hold_active) {
+    if (g_rewind_hold_refused) return false;
+    if (snes_rewind_is_open() || !snes_rewind_open()) {
+      /* Off, netplay, or under two snapshots yet: the game just goes on. */
+      g_rewind_hold_refused = 1;
+      snes_osd_push(snes_rewind_enabled() ? "Nothing to rewind yet" : "Rewind is off", 1500);
+      return false;
+    }
+    g_rewind_hold_active = 1;
+    g_rewind_hold_calls = 0;
+    SetAudioPaused(true);
+    host_report_breadcrumb("rewind hold started");
+  }
+  unsigned n = g_rewind_hold_calls++;
+  bool step = (n & 1) == 0 || n >= 120;
+  if (step) {
+    if (n) snes_rewind_step(-1);       /* the first call shows the newest */
+    if (snes_rewind_preview()) {
+      g_state_generation = RtlStateGeneration();
+      uint32_t cursor = RtlAudioProducerCursor();
+      if (g_game->before_run_frame) g_game->before_run_frame();
+      RtlRunFrame(GetActiveControllers());
+      g_snes->disableRender = 0;
+      CaptureSimulationFrame(frame_ctr);
+      RtlAudioRewindProducer(cursor);
+      g_state_generation = RtlStateGeneration();
+      /* SNESRECOMP_REWIND_HOLD_DUMP=<prefix>: every 10th step's picture, as
+       * <prefix>_NNN.bmp, so a headless run can see what was shown. */
+      const char *dump = HostGetenv("REWIND_HOLD_DUMP");
+      if (dump && dump[0] && n % 20 == 0 && g_ppu && g_ppu->renderBuffer) {
+        char path[1024];
+        int width = g_game->native_widescreen ? g_snes_width : 256;
+        snprintf(path, sizeof(path), "%s_%03u.bmp", dump, n / 2);
+        WriteBmp24(path, (const uint32_t *)g_ppu->renderBuffer, width, g_snes_height);
+      }
+#if defined(SNESRECOMP_HOST_HAS_BLEND)
+      if (g_blend) recomp_frame_blend_reset(g_blend);   /* never blend across a jump */
+      g_blend_frame = 0;
+#endif
+    }
+  }
+  RewindHoldCaption();
+  g_present_alpha = 1;
+  DrawPpuFrameWithPerf();
+  return true;
+}
+
 /* ── Audio ────────────────────────────────────────────────────────────────── */
 
 static SDL_mutex *g_audio_mutex;
@@ -4012,6 +4126,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
   if (game->state_menu_hotkeys) ConfigUseStateMenuDefaults();
   if (game->in_game_launcher) ConfigUseInGameLauncherDefaults();
   if (game->pause_menu) ConfigUsePauseMenuDefaults();
+  if (game->rewind_hold) ConfigUseRewindHoldDefaults();
   ParseConfigFile(config_file);
   g_active_config_file = config_file;
   /* Local overrides (gitignored). Last parser to set a key wins. */
@@ -4037,10 +4152,11 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
       { "Screenshot", kKeys_Screenshot }, { "DisplayPerf", kKeys_DisplayPerf },
       { "Pause", kKeys_Pause }, { "Reset", kKeys_Reset },
       { "OpenLauncher", kKeys_OpenLauncher }, { "PauseMenu", kKeys_PauseMenu },
+      { "RewindHold", kKeys_RewindHold },
     };
     static const SDL_Keycode kKeys[] = {
       SDLK_KP_PLUS, SDLK_KP_MINUS, SDLK_F11, SDLK_F12, SDLK_f, SDLK_p, SDLK_EQUALS, SDLK_MINUS,
-      SDLK_F7, SDLK_F8, SDLK_r, SDLK_l, SDLK_ESCAPE,
+      SDLK_F7, SDLK_F8, SDLK_r, SDLK_l, SDLK_ESCAPE, SDLK_BACKSPACE,
     };
     for (size_t i = 0; i < sizeof(kProbe) / sizeof(kProbe[0]); i++) {
       const char *bound = "(unbound among the probed keys)";
@@ -5091,6 +5207,15 @@ error_reading:;
       }
     }
     g_rewind_hotkey = 0;
+    if (RewindHoldTick(frameCtr)) {
+      if (paced_realtime)
+        snes_host_clock_simulation_done(&video_clock, MonotonicSeconds(), false,
+                                        RtlLastFramePeriods());
+      else
+        snes_host_clock_reset(&video_clock, MonotonicSeconds(), g_simulation_hz, presentation_hz);
+      ++presentations;
+      continue;   /* a rewind step, not a game frame */
+    }
     /* Exactly ONE poll_open per frame: it latches the previous word to edge
      * detect on, so a second call in the same frame eats the edge. */
     (void)snes_savestate_menu_poll_open(human);
@@ -5399,6 +5524,10 @@ static void HandleCommand(uint32 j, bool pressed) {
     g_turbo = pressed;
     return;
   }
+  if (j == kKeys_RewindHold) {
+    g_rewind_hold_key = pressed && g_game->rewind_hold;
+    return;
+  }
 
   if (!pressed)
     return;
@@ -5599,7 +5728,7 @@ static void SetPadButtonOrFallthrough(uint32 j, bool pressed) {
     g_pad_buttons = pressed ? (g_pad_buttons | m) : (g_pad_buttons & ~m);
     return;
   }
-  if (g_overlay_modal)
+  if (g_overlay_modal && !(j == kKeys_RewindHold && !pressed))
     return;   /* a panel owns the screen: no state loads behind it */
   HandleCommand(j, pressed);
 }

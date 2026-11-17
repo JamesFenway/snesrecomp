@@ -178,6 +178,12 @@ typedef struct SnesDesktopHostGame {
    * holds whole-machine snapshots, so a port that wants it off out of the box
    * ships `[Rewind] Enabled = 0` in default_config_ini. */
   int rewind_settings;
+  /* Opt in to hold-to-rewind: while [KeyMap] / [GamepadMap] RewindHold is
+   * held (defaults Backspace and the left trigger, L2), the game plays
+   * backwards through the rewind ring at 3x, silent, with a REWIND caption;
+   * letting go plays on from the moment shown. Refused during netplay, like
+   * the filmstrip. Zero keeps today's behaviour exactly. */
+  int rewind_hold;
   /* Opt in to reopening the launcher mid-game: [KeyMap] OpenLauncher
    * (default Ctrl+L) or [Controller] LauncherGesture (default Select+L3)
    * freezes the guest and opens the full launcher over it. Settings that can
