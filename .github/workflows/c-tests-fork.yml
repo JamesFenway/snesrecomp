@@ -1,0 +1,32 @@
+# ROM-free C regression harnesses (tests/run_c_tests.sh) for the branch the
+# Super Star Wars trilogy ports pin (fix/manual-joypad-strobe) and pull
+# requests into it. recomp-net is checked out for the auth test; the
+# lobby-caps test does not link against its pinned version, so it is skipped.
+name: C tests (fork)
+
+on:
+  push:
+    branches: [fix/manual-joypad-strobe]
+  pull_request:
+    branches: [fix/manual-joypad-strobe]
+  workflow_dispatch:
+
+concurrency:
+  group: c-tests-fork-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: sudo apt-get update -q && sudo apt-get install -y -q libsdl2-dev
+      - name: recomp-net
+        run: git submodule update --init lib/recomp-net
+      - name: C tests
+        env:
+          SNESRECOMP_SKIP_LOBBY_TEST: "1"
+          OUT: ${{ runner.temp }}/c-tests
+        run: bash tests/run_c_tests.sh

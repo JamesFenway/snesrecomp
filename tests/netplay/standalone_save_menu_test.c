@@ -47,6 +47,7 @@ bool RtlLoadSnapshot(const char *path)
 void snes_osd_push_slot_saved(int slot) { (void)slot; saved_toast++; }
 void snes_osd_push_slot_loaded(int slot) { (void)slot; loaded_toast++; }
 void snes_osd_push_slot_empty(int slot) { (void)slot; }
+void snes_osd_push(const char *msg, int duration_ms) { (void)msg; (void)duration_ms; }
 
 int main(void)
 {
