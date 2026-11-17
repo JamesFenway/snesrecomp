@@ -47,6 +47,10 @@ enum {
   /* In-game pause menu (SnesDesktopHostGame.pause_menu, snes_pause_menu.c).
    * Appended for the same reason as SaveStateMenu. */
   kKeys_PauseMenu,
+  /* Hold to rewind (SnesDesktopHostGame.rewind_hold): while held the game
+   * runs backwards through the rewind ring; letting go plays on from there.
+   * Appended for the same reason as SaveStateMenu. */
+  kKeys_RewindHold,
   kKeys_Total,
 };
 
@@ -207,6 +211,9 @@ void ConfigUseStateMenuDefaults(void);
 void ConfigUseInGameLauncherDefaults(void);
 /* Opt in before parsing: binds [KeyMap] PauseMenu to Escape by default. */
 void ConfigUsePauseMenuDefaults(void);
+/* Hold-to-rewind defaults: Backspace, and the pad's left trigger (L2) when
+ * [GamepadMap] has no RewindHold line. Call before parsing. */
+void ConfigUseRewindHoldDefaults(void);
 void ParseConfigFile(const char *filename);
 // Re-apply only the [KeyMap] section (launcher hotkey editor wrote it after
 // the initial parse). Keyboard command map is rebuilt; gamepad map and all
