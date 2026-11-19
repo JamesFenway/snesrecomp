@@ -40,6 +40,7 @@ def test_indirect_indexed_execution_matches_interpreter(tmp_path):
     main = r'''
 #include "snes/interp816.h"
 int snes_frame_counter;
+uint8_t g_snes_cpu_clock_shift; /* fork: SNES_CPU_CLOCKS overclock shift */
 int interp816_opcode_hook(uint32_t pc) { (void)pc; return 0; }
 static uint8_t rd(void *p,uint32_t a) { return cpu_read8(p,a>>16,(uint16)a); }
 static void wr(void *p,uint32_t a,uint8_t v) { cpu_write8(p,a>>16,(uint16)a,v); }

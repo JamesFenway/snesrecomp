@@ -22,6 +22,7 @@ uint8 g_ram[0x20000], g_memsel;
 const char *g_last_recomp_func;
 int g_recomp_stack_top;
 uint16_t g_cpu_entry_s[64];
+uint8_t g_snes_cpu_clock_shift; /* fork: SNES_CPU_CLOCKS overclock shift */
 static int other_exits, ancestor_skip;
 static uint32 other_target;
 uint8 cpu_read8(CpuState *cpu, uint8 bank, uint16 addr) {
