@@ -445,6 +445,13 @@ echo "=== mod runtime: presentation_only is not compared by netplay ==="
 rm -rf "$OUT/mod_presentation_only_fixture"
 "$OUT/mod_presentation_only_test" "$OUT/mod_presentation_only_fixture"
 
+echo "=== PPU tile-address accessor expressions ==="
+"$CC" -std=c11 -Wall -Wextra -Werror -O1 \
+    -I "$ROOT/runner/src" \
+    "$ROOT/tests/ppu/ppu_bg_tile_adr_test.c" \
+    -o "$OUT/ppu_bg_tile_adr_test"
+"$OUT/ppu_bg_tile_adr_test"
+
 echo "=== host OSD (FPS readout / turbo / toasts) ==="
 # Needs SDL for its clock only (no window; SDL_INIT_TIMER). Skipped rather than
 # failed where SDL headers are absent, so this stays a ROM-free harness that

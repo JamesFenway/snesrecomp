@@ -1954,7 +1954,8 @@ def emit_function(rom: bytes, bank: int, start: int,
                 lines.append(_goto_or_return(succs[0], source_pc24=blk_pc24)
                              + " /* implicit fall-through */")
             elif (len(succs) > 1 and pairs
-                  and pairs[-1][0].mnem in ('JSR', 'JSL')):
+                  and (pairs[-1][0].mnem in ('JSR', 'JSL')
+                       or getattr(pairs[-1][0], 'dispatch_call', False))):
                 lines.append("switch (((cpu->m_flag & 1) << 1) | (cpu->x_flag & 1)) {")
                 seen_mx = set()
                 fallback_stmt = None
@@ -2094,11 +2095,15 @@ def emit_function(rom: bytes, bank: int, start: int,
             f'cpu, {_transfer_target_expr(fn_entry_pc, False)}, 0x{fn_entry_pc:06X}u, _entry_s, _hrv, false); }}')
     src.append(f'  uint32 _host_return_pc24 = 0xFFFFFFFFu;')
     src.append(f'  if (_hrv == 2 || _hrv == 3) {{')
+    # Preserve the latch around host return-PC sampling. cpu_read8 retains its
+    # mapped read semantics; architectural RTS/RTL reads still latch normally.
+    src.append(f'    uint8 _host_entry_bus = cpu->open_bus;')
     src.append(f'    uint16 _host_rpcl = cpu_read8(cpu, 0x00, (uint16)(_entry_s + 1u));')
     src.append(f'    uint16 _host_rpch = cpu_read8(cpu, 0x00, (uint16)(_entry_s + 2u));')
     src.append(f'    uint8 _host_rpb = (_hrv == 3) ? cpu_read8(cpu, 0x00, (uint16)(_entry_s + 3u)) : cpu->PB;')
     src.append(f'    _host_return_pc24 = ((uint32)_host_rpb << 16) |')
     src.append(f'        (uint16)((((_host_rpch << 8) | _host_rpcl) + 1u) & 0xFFFFu);')
+    src.append(f'    cpu->open_bus = _host_entry_bus;')
     src.append(f'  }}')
     src.append(f'  (void)_entry_s;  /* used by trampoline balance check */')
     src.append(f'  (void)_hrv;')
